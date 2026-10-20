@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrustLens AI — Guardian Dashboard (CC6-AI05)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-[#080D1A] text-slate-100 font-sans min-h-screen p-5">
+  <div class="max-w-6xl mx-auto space-y-5">
+
+    <!-- Top Header -->
+    <header class="bg-[#111827] border border-slate-800 p-5 rounded-2xl flex flex-wrap justify-between items-center gap-4 shadow-xl">
+      <div>
+        <h1 class="text-2xl font-extrabold text-teal-400">🛡️ TrustLens AI — Ambient Guardian</h1>
+        <p class="text-xs text-slate-400 mt-0.5">
+          🔒 Privacy Guarantee: Phone numbers, card numbers, emails &amp; OTPs are redacted locally before cloud AI analysis.
+        </p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2.5">
+        <button onclick="triggerDemoMode()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition">
+          ⚡ Run 6-Event Demo Mode
+        </button>
+        <button id="pauseBtn" onclick="togglePause()" class="bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-bold px-3.5 py-2 rounded-xl transition">
+          ⏸️ Pause Protection
+        </button>
+        <select id="langSelect" onchange="setLanguage(this.value)" class="bg-[#080D1A] border border-slate-700 text-xs text-slate-200 px-3 py-2 rounded-xl">
+          <option value="en">English (EN)</option>
+          <option value="hi">हिंदी (HI)</option>
+        </select>
+        <span id="statusBadge" class="bg-emerald-950 border border-emerald-500/50 text-emerald-400 px-3 py-1.5 rounded-full text-xs font-bold">
+          ● Watching (Active)
+        </span>
+      </div>
+    </header>
+
+    <!-- 4 Metric Cards -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-bold" data-i18n="statScanned">Total Scanned</div>
+        <div id="statScannedVal" class="text-2xl font-black text-teal-400 mt-1">0</div>
+      </div>
+      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-bold" data-i18n="statBlocked">Threats Blocked</div>
+        <div id="statBlockedVal" class="text-2xl font-black text-rose-500 mt-1">0</div>
+      </div>
+      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-bold" data-i18n="statFP">Auto-FP Corrected</div>
+        <div id="statFPVal" class="text-2xl font-black text-amber-400 mt-1">0</div>
+      </div>
+      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-bold" data-i18n="statAcc">Benchmark Accuracy</div>
+        <div id="statAccVal" class="text-2xl font-black text-emerald-400 mt-1">100%</div>
+      </div>
+    </div>
+
+    <!-- Main 2-Column Grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+
+      <!-- Left Column: Manual Scanner, Screenshot Upload & URL/WHOIS Inspector -->
+      <div class="lg:col-span-5 space-y-5">
+        <div class="bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-3 shadow-xl">
+          <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider" data-i18n="manualScanTitle">🔍 Manual Text / Link / Image Audit</h2>
+          <textarea id="manualInput" rows="3" placeholder="Paste suspicious SMS, WhatsApp message, or URL (e.g. arnazon.com)..."
+            class="w-full bg-[#080D1A] border border-slate-700 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-teal-400"></textarea>
+          <div class="flex gap-2">
+            <button onclick="submitManualText()" class="flex-1 bg-teal-600 hover:bg-teal-500 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition">
+              🛡️ Audit Text / URL
+            </button>
+            <label class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 px-4 rounded-xl text-xs cursor-pointer transition">
+              🖼️ Upload Screenshot
+              <input type="file" id="imageUploadInput" accept="image/png,image/jpeg,image/webp" class="hidden" onchange="submitManualImage()" />
+            </label>
+          </div>
+        </div>
+
+        <!-- Safe URL Redirect & WHOIS Age Inspector -->
+        <div class="bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-3 shadow-xl">
+          <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider">🌐 Safe Redirect &amp; WHOIS Domain Check</h2>
+          <div class="flex gap-2">
+            <input id="urlSafetyInput" type="text" placeholder="e.g. bit.ly/... or sbi.co.in"
+              class="flex-1 bg-[#080D1A] border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400" />
+            <button onclick="checkUrlSafety()" class="bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-bold px-3.5 py-2 rounded-xl">
+              Check
+            </button>
+          </div>
+          <div id="urlSafetyOutput" class="text-xs text-slate-400 bg-[#080D1A] p-3 rounded-xl border border-slate-800">
+            Follows redirects via safe HEAD request (no downloads) and queries IANA WHOIS creation date.
+          </div>
+        </div>
+
+        <!-- Timeline Chart -->
+        <div class="bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-2 shadow-xl">
+          <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider">📈 Live Risk Score Timeline (Recent Scans)</h2>
+          <div class="h-44"><canvas id="timelineChart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Right Column: Live Interception Feed -->
+      <div class="lg:col-span-7 bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-4 shadow-xl flex flex-col">
+        <div class="flex justify-between items-center">
+          <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider" data-i18n="liveFeedTitle">⚡ Live Ambient Interception Feed</h2>
+          <span id="queueCounter" class="text-xs text-teal-400 font-semibold">Queue: 0 pending</span>
+        </div>
+        <div id="feedList" class="space-y-4 overflow-y-auto max-h-[600px] pr-1">
+          <div class="text-xs text-slate-500 italic p-4">
+            Watching clipboard copies (Ctrl+C), screenshots (Win+Shift+S), and Windows notifications...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cybercrime Helpline Footer -->
+    <footer class="bg-red-950/40 border border-red-500/30 p-4 rounded-2xl flex flex-wrap justify-between items-center gap-3">
+      <div class="text-xs text-red-200">
+        🚨 <b>National Cyber Crime Helpline:</b> Dial <b class="text-white">1930</b> immediately if you lost money, or file a complaint online.
+      </div>
+      <a href="https://cybercrime.gov.in" target="_blank" rel="noopener noreferrer"
+        class="bg-red-600 hover:bg-red-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition">
+        Open cybercrime.gov.in ↗
+      </a>
+    </footer>
+  </div>
+
+  <script>
+    let currentLang = 'en';
+    let isPaused = false;
+    let timelineChart = null;
+    let lastRenderedHash = '';
+
+    const i18n = {
+      en: {
+        statScanned: "Total Scanned",
+        statBlocked: "Threats Blocked",
+        statFP: "Auto-FP Corrected",
+        statAcc: "Benchmark Accuracy",
+        manualScanTitle: "🔍 Manual Text / Link / Image Audit",
+        liveFeedTitle: "⚡ Live Ambient Interception Feed"
+      },
+      hi: {
+        statScanned: "कुल स्कैन किए गए",
+        statBlocked: "खतरे रोके गए",
+        statFP: "स्वतः सुधारे गए (Auto-FP)",
+        statAcc: "सिस्टम सटीकता",
+        manualScanTitle: "🔍 मैनुअल टेक्स्ट / लिंक / स्क्रीनशॉट जांच",
+        liveFeedTitle: "⚡ लाइव सुरक्षा इंटरसेप्शन फीड"
+      }
+    };
+
+    function escapeHtml(s) {
+      return String(s || '').replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+    }
+
+    async function setLanguage(lang) {
+      currentLang = lang;
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const k = el.getAttribute('data-i18n');
+        if (i18n[lang] && i18n[lang][k]) el.innerText = i18n[lang][k];
+      });
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language: lang })
+      });
+      lastRenderedHash = '';
+      pollFeed();
+    }
+
+    async function togglePause() {
+      isPaused = !isPaused;
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paused: isPaused })
+      });
+      pollFeed();
+    }
+
+    async function triggerDemoMode() {
+      await fetch('/api/demo', { method: 'POST' });
+      pollFeed();
+    }
+
+    async function submitManualText() {
+      const el = document.getElementById('manualInput');
+      const txt = el.value.trim();
+      if (!txt) return;
+      el.value = '';
+      await fetch('/api/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input_text: txt, channel: 'dashboard', language: currentLang })
+      });
+      pollFeed();
+    }
+
+    async function submitManualImage() {
+      const input = document.getElementById('imageUploadInput');
+      if (!input.files || !input.files[0]) return;
+      const fd = new FormData();
+      fd.append('file', input.files[0]);
+      await fetch('/api/audit-image', { method: 'POST', body: fd });
+      input.value = '';
+      pollFeed();
+    }
+
+    async function checkUrlSafety() {
+      const url = document.getElementById('urlSafetyInput').value.trim();
+      if (!url) return;
+      const out = document.getElementById('urlSafetyOutput');
+      out.innerText = "Checking redirect chain & WHOIS...";
+      try {
+        const res = await fetch('/api/url-safety', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const d = await res.json();
+        out.innerHTML = `
+          <div><b>Final Destination:</b> <span class="text-teal-300">${escapeHtml(d.final_url || d.detail)}</span></div>
+          <div><b>HTTP Status:</b> ${escapeHtml(d.http_status ?? 'Unreachable')} | <b>WHOIS Created:</b> ${escapeHtml(d.domain_created || 'N/A')}</div>
+        `;
+      } catch (e) {
+        out.innerText = "Safety check failed: " + e;
+      }
+    }
+
+    async function sendFeedback(itemId, snippet, domain, fbType) {
+      await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_id: itemId,
+          input_snippet: snippet,
+          domain: domain || null,
+          feedback_type: fbType,
+          lesson_note: `Dashboard feedback (${fbType}) on ${snippet.slice(0, 50)}`
+        })
+      });
+      pollFeed();
+    }
+
+    function copyAndReport(index) {
+      const item = window._latestItems?.[index];
+      if (!item) return;
+      const a = item.analysis || {};
+      const report = `TrustLens AI Cybercrime Report\nSource: ${item.source}\nRisk: ${a.overall_risk_score} (${a.numeric_risk_score}/100)\nCategory: ${a.fraud_category}\nRedacted Input: ${item.input}\nDetails: ${a.what_it_seems_to_be}\nHelpline: 1930`;
+      navigator.clipboard.writeText(report);
+      window.open('https://cybercrime.gov.in', '_blank', 'noopener');
+    }
+
+    function updateTimelineChart(items) {
+      const reversed = [...items].slice(0, 12).reverse();
+      const labels = reversed.map(i => i.timestamp || '');
+      const pass1Scores = reversed.map(i => i.heuristics?.pass1_naive_score ?? 0);
+      const finalScores = reversed.map(i => i.analysis?.numeric_risk_score ?? 0);
+
+      const ctx = document.getElementById('timelineChart').getContext('2d');
+      if (timelineChart) timelineChart.destroy();
+      timelineChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: 'Final Score', data: finalScores, borderColor: '#14B8A6', backgroundColor: 'rgba(20,184,166,0.15)', fill: true, tension: 0.3 },
+            { label: 'Naive Pass-1', data: pass1Scores, borderColor: '#64748B', borderDash: [4, 4], fill: false, tension: 0.3 }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { y: { min: 0, max: 100, ticks: { color: '#94A3B8' } }, x: { ticks: { color: '#94A3B8', font: { size: 9 } } } },
+          plugins: { legend: { labels: { color: '#CBD5E1', boxWidth: 10, font: { size: 10 } } } }
+        }
+      });
+    }
+
+    async function pollFeed() {
+      try {
+        const res = await fetch('/api/feed');
+        const d = await res.json();
+        isPaused = !!d.paused;
+        document.getElementById('pauseBtn').innerText = isPaused ? "▶️ Resume Protection" : "⏸️ Pause Protection";
+        const badge = document.getElementById('statusBadge');
+        badge.innerText = isPaused ? "⏸️ Paused (Privacy Mode)" : "● Watching (Active)";
+        badge.className = isPaused
+          ? "bg-slate-800 border border-slate-600 text-slate-300 px-3 py-1.5 rounded-full text-xs font-bold"
+          : "bg-emerald-950 border border-emerald-500/50 text-emerald-400 px-3 py-1.5 rounded-full text-xs font-bold";
+
+        document.getElementById('queueCounter').innerText = `Queue: ${d.queue_pending || 0} pending`;
+        document.getElementById('statScannedVal').innerText = d.total_scanned || 0;
+        const items = d.items || [];
+        window._latestItems = items;
+        document.getElementById('statBlockedVal').innerText = items.filter(i => i.analysis?.is_suspicious).length;
+        document.getElementById('statFPVal').innerText = d.metrics?.auto_fp_corrected || 0;
+        document.getElementById('statAccVal').innerText = `${d.accuracy_pct ?? 100}%`;
+
+        const hash = JSON.stringify(items.map(i => i.id + currentLang));
+        if (hash === lastRenderedHash) return;
+        lastRenderedHash = hash;
+
+        updateTimelineChart(items);
+
+        const list = document.getElementById('feedList');
+        if (!items.length) return;
+
+        const useHi = currentLang === 'hi';
+        list.innerHTML = items.map((item, idx) => {
+          const a = item.analysis || {};
+          const h = item.heuristics || {};
+          const risk = a.overall_risk_score || 'Low';
+          const score = a.numeric_risk_score ?? 0;
+          const border = risk === 'High' ? 'border-red-500' : (risk === 'Medium' ? 'border-amber-500' : 'border-emerald-600');
+          const pill = risk === 'High' ? 'bg-red-600' : (risk === 'Medium' ? 'bg-amber-600' : 'bg-emerald-600');
+
+          const calm = useHi ? (a.calm_down_message_hi || a.calm_down_message) : a.calm_down_message;
+          const about = useHi ? (a.what_input_is_about_hi || a.what_input_is_about) : a.what_input_is_about;
+          const seems = useHi ? (a.what_it_seems_to_be_hi || a.what_it_seems_to_be) : a.what_it_seems_to_be;
+          const affects = useHi ? (a.how_it_affects_user_hi || a.how_it_affects_user) : a.how_it_affects_user;
+          const actions = (useHi ? (a.recommended_actions_hi?.length ? a.recommended_actions_hi : a.recommended_actions) : a.recommended_actions) || [];
+
+          return `
+            <div class="bg-[#1E293B] border-l-4 ${border} p-4 rounded-xl space-y-2.5 shadow">
+              <div class="flex justify-between items-center gap-2">
+                <span class="${pill} text-white text-xs font-extrabold px-2.5 py-0.5 rounded-full">
+                  ${escapeHtml(risk.toUpperCase())} (${score}/100) — ${escapeHtml(a.fraud_category)}
+                </span>
+                <span class="text-[11px] text-slate-400">${escapeHtml(item.source)} • ${escapeHtml(item.timestamp)}</span>
+              </div>
+              <div class="text-sm font-bold text-sky-300">${escapeHtml(calm)}</div>
+              <div class="bg-[#0F172A] p-3 rounded-lg text-xs space-y-1.5 border border-slate-800">
+                <div><b class="text-sky-400">📌 About:</b> ${escapeHtml(about)}</div>
+                <div><b class="text-amber-400">🎭 Seems To Be:</b> ${escapeHtml(seems)}</div>
+                <div><b class="text-rose-400">💥 Impact:</b> ${escapeHtml(affects)}</div>
+                <div class="text-slate-400"><b>Redacted Input:</b> ${escapeHtml(item.input)}</div>
+                <div class="text-purple-300"><b>Pass-1 Naive:</b> ${h.pass1_naive_score ?? 0}/100 ➔ <b>Final Score:</b> ${score}/100 (${escapeHtml(a.verification_status || 'verified')})</div>
+              </div>
+              <ul class="text-xs text-emerald-300 space-y-0.5">
+                ${actions.map(act => `<li>✔ ${escapeHtml(act)}</li>`).join('')}
+              </ul>
+              <div class="flex flex-wrap gap-2 pt-1">
+                <button onclick="sendFeedback('${escapeHtml(item.id)}', '${escapeHtml(item.input)}', '${escapeHtml(h.domain || '')}', 'false_positive')"
+                  class="bg-emerald-900/70 hover:bg-emerald-800 text-emerald-200 text-[11px] font-bold px-3 py-1 rounded-lg">
+                  ✅ This Was Safe
+                </button>
+                <button onclick="sendFeedback('${escapeHtml(item.id)}', '${escapeHtml(item.input)}', '${escapeHtml(h.domain || '')}', 'confirm_scam')"
+                  class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold px-3 py-1 rounded-lg">
+                  🚨 Confirm Scam
+                </button>
+                <button onclick="copyAndReport(${idx})"
+                  class="bg-red-900/80 hover:bg-red-800 text-red-100 text-[11px] font-bold px-3 py-1 rounded-lg ml-auto">
+                  📞 Copy Report &amp; Open 1930 Portal
+                </button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {}
+    }
+
+    setInterval(pollFeed, 2000);
+    pollFeed();
+  </script>
+</body>
+</html>
