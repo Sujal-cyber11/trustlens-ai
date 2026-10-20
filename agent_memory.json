@@ -52,7 +52,7 @@
   ],
   "metrics": {
     "tp": 18,
-    "tn": 88,
+    "tn": 91,
     "fp": 5,
     "fn": 0,
     "auto_fp_corrected": 9,
