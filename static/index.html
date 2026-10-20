@@ -13,14 +13,20 @@
     <!-- Top Header -->
     <header class="bg-[#111827] border border-slate-800 p-5 rounded-2xl flex flex-wrap justify-between items-center gap-4 shadow-xl">
       <div>
-        <h1 class="text-2xl font-extrabold text-teal-400">🛡️ TrustLens AI — Ambient Guardian</h1>
+        <h1 class="text-2xl font-extrabold text-teal-400">🛡️ TrustLens AI — Desktop &amp; Browser Guardian</h1>
         <p class="text-xs text-slate-400 mt-0.5">
-          🔒 Privacy Guarantee: Phone numbers, card numbers, emails &amp; OTPs are redacted locally before cloud AI analysis.
+          🔒 Privacy Guarantee: Phone numbers, card numbers, emails &amp; OTPs are redacted locally before cloud AI analysis. Never reads input values.
         </p>
       </div>
       <div class="flex flex-wrap items-center gap-2.5">
+        <a href="/demo/dark-patterns" target="_blank" class="bg-rose-700 hover:bg-rose-600 text-white text-xs font-bold px-3 py-2 rounded-xl transition">
+          🧪 Dark Patterns Demo Page ↗
+        </a>
+        <a href="/demo/clean" target="_blank" class="bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold px-3 py-2 rounded-xl transition">
+          🌿 Clean Demo Page ↗
+        </a>
         <button onclick="triggerDemoMode()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition">
-          ⚡ Run 6-Event Demo Mode
+          ⚡ Run 6-Event Demo
         </button>
         <button id="pauseBtn" onclick="togglePause()" class="bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-bold px-3.5 py-2 rounded-xl transition">
           ⏸️ Pause Protection
@@ -35,8 +41,8 @@
       </div>
     </header>
 
-    <!-- 4 Metric Cards -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <!-- 6 Metric Cards (Including Browser Pages Scanned & Dark Patterns Found) -->
+    <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
       <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
         <div class="text-xs text-slate-400 font-bold" data-i18n="statScanned">Total Scanned</div>
         <div id="statScannedVal" class="text-2xl font-black text-teal-400 mt-1">0</div>
@@ -44,6 +50,14 @@
       <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
         <div class="text-xs text-slate-400 font-bold" data-i18n="statBlocked">Threats Blocked</div>
         <div id="statBlockedVal" class="text-2xl font-black text-rose-500 mt-1">0</div>
+      </div>
+      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-bold" data-i18n="statPages">Browser Pages Scanned</div>
+        <div id="statPagesVal" class="text-2xl font-black text-sky-400 mt-1">0</div>
+      </div>
+      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-bold" data-i18n="statDP">Dark Patterns Found</div>
+        <div id="statDPVal" class="text-2xl font-black text-purple-400 mt-1">0</div>
       </div>
       <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
         <div class="text-xs text-slate-400 font-bold" data-i18n="statFP">Auto-FP Corrected</div>
@@ -58,7 +72,7 @@
     <!-- Main 2-Column Grid -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
 
-      <!-- Left Column: Manual Scanner, Screenshot Upload & URL/WHOIS Inspector -->
+      <!-- Left Column -->
       <div class="lg:col-span-5 space-y-5">
         <div class="bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-3 shadow-xl">
           <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider" data-i18n="manualScanTitle">🔍 Manual Text / Link / Image Audit</h2>
@@ -75,7 +89,6 @@
           </div>
         </div>
 
-        <!-- Safe URL Redirect & WHOIS Age Inspector -->
         <div class="bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-3 shadow-xl">
           <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider">🌐 Safe Redirect &amp; WHOIS Domain Check</h2>
           <div class="flex gap-2">
@@ -90,7 +103,6 @@
           </div>
         </div>
 
-        <!-- Timeline Chart -->
         <div class="bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-2 shadow-xl">
           <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider">📈 Live Risk Score Timeline (Recent Scans)</h2>
           <div class="h-44"><canvas id="timelineChart"></canvas></div>
@@ -100,18 +112,17 @@
       <!-- Right Column: Live Interception Feed -->
       <div class="lg:col-span-7 bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-4 shadow-xl flex flex-col">
         <div class="flex justify-between items-center">
-          <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider" data-i18n="liveFeedTitle">⚡ Live Ambient Interception Feed</h2>
+          <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider" data-i18n="liveFeedTitle">⚡ Live Ambient &amp; Browser Interception Feed</h2>
           <span id="queueCounter" class="text-xs text-teal-400 font-semibold">Queue: 0 pending</span>
         </div>
         <div id="feedList" class="space-y-4 overflow-y-auto max-h-[600px] pr-1">
           <div class="text-xs text-slate-500 italic p-4">
-            Watching clipboard copies (Ctrl+C), screenshots (Win+Shift+S), and Windows notifications...
+            Watching Browser Extension pages, clipboard copies (Ctrl+C), screenshots (Win+Shift+S), and Windows notifications...
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Cybercrime Helpline Footer -->
     <footer class="bg-red-950/40 border border-red-500/30 p-4 rounded-2xl flex flex-wrap justify-between items-center gap-3">
       <div class="text-xs text-red-200">
         🚨 <b>National Cyber Crime Helpline:</b> Dial <b class="text-white">1930</b> immediately if you lost money, or file a complaint online.
@@ -133,18 +144,22 @@
       en: {
         statScanned: "Total Scanned",
         statBlocked: "Threats Blocked",
+        statPages: "Browser Pages Scanned",
+        statDP: "Dark Patterns Found",
         statFP: "Auto-FP Corrected",
         statAcc: "Benchmark Accuracy",
         manualScanTitle: "🔍 Manual Text / Link / Image Audit",
-        liveFeedTitle: "⚡ Live Ambient Interception Feed"
+        liveFeedTitle: "⚡ Live Ambient & Browser Interception Feed"
       },
       hi: {
         statScanned: "कुल स्कैन किए गए",
         statBlocked: "खतरे रोके गए",
+        statPages: "ब्राउज़र पेज स्कैन किए गए",
+        statDP: "डार्क पैटर्न मिले",
         statFP: "स्वतः सुधारे गए (Auto-FP)",
         statAcc: "सिस्टम सटीकता",
         manualScanTitle: "🔍 मैनुअल टेक्स्ट / लिंक / स्क्रीनशॉट जांच",
-        liveFeedTitle: "⚡ लाइव सुरक्षा इंटरसेप्शन फीड"
+        liveFeedTitle: "⚡ लाइव सुरक्षा और ब्राउज़र इंटरसेप्शन फीड"
       }
     };
 
@@ -264,7 +279,7 @@
           labels,
           datasets: [
             { label: 'Final Score', data: finalScores, borderColor: '#14B8A6', backgroundColor: 'rgba(20,184,166,0.15)', fill: true, tension: 0.3 },
-            { label: 'Naive Pass-1', data: pass1Scores, borderColor: '#64748B', borderDash: [4, 4], fill: false, tension: 0.3 }
+            { label: 'Malicious / Pass-1', data: pass1Scores, borderColor: '#64748B', borderDash: [4, 4], fill: false, tension: 0.3 }
           ]
         },
         options: {
@@ -293,6 +308,8 @@
         const items = d.items || [];
         window._latestItems = items;
         document.getElementById('statBlockedVal').innerText = items.filter(i => i.analysis?.is_suspicious).length;
+        document.getElementById('statPagesVal').innerText = d.metrics?.browser_pages_scanned || 0;
+        document.getElementById('statDPVal').innerText = d.metrics?.dark_patterns_found || 0;
         document.getElementById('statFPVal').innerText = d.metrics?.auto_fp_corrected || 0;
         document.getElementById('statAccVal').innerText = `${d.accuracy_pct ?? 100}%`;
 
@@ -311,6 +328,8 @@
           const h = item.heuristics || {};
           const risk = a.overall_risk_score || 'Low';
           const score = a.numeric_risk_score ?? 0;
+          const malScore = a.malicious_score ?? h.malicious_score ?? score;
+          const dpScore = a.dark_pattern_score ?? h.dark_pattern_score ?? 0;
           const border = risk === 'High' ? 'border-red-500' : (risk === 'Medium' ? 'border-amber-500' : 'border-emerald-600');
           const pill = risk === 'High' ? 'bg-red-600' : (risk === 'Medium' ? 'bg-amber-600' : 'bg-emerald-600');
 
@@ -334,7 +353,7 @@
                 <div><b class="text-amber-400">🎭 Seems To Be:</b> ${escapeHtml(seems)}</div>
                 <div><b class="text-rose-400">💥 Impact:</b> ${escapeHtml(affects)}</div>
                 <div class="text-slate-400"><b>Redacted Input:</b> ${escapeHtml(item.input)}</div>
-                <div class="text-purple-300"><b>Pass-1 Naive:</b> ${h.pass1_naive_score ?? 0}/100 ➔ <b>Final Score:</b> ${score}/100 (${escapeHtml(a.verification_status || 'verified')})</div>
+                <div class="text-purple-300"><b>Malicious Score:</b> ${malScore}/100 | <b>Dark Pattern Score:</b> ${dpScore}/100 | <b>Combined:</b> ${score}/100</div>
               </div>
               <ul class="text-xs text-emerald-300 space-y-0.5">
                 ${actions.map(act => `<li>✔ ${escapeHtml(act)}</li>`).join('')}

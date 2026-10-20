@@ -9,9 +9,10 @@ from typing import Any, Callable
 import webbrowser
 
 from PIL import Image, ImageDraw
+import pyperclip
 import pystray
 
-from collectors import load_settings, save_settings
+from collectors import get_extension_token, load_settings, save_settings
 
 log = logging.getLogger("trustlens.tray")
 
@@ -78,14 +79,12 @@ def _create_shield_icon(state_color: str) -> Image.Image:
     fill_rgb = palette.get(state_color, palette["green"])
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    # Outer dark circle + inner colored shield badge
     draw.ellipse([4, 4, 60, 60], fill=(15, 23, 42, 255), outline=fill_rgb, width=4)
     draw.polygon([(32, 14), (48, 20), (45, 39), (32, 50), (19, 39), (16, 20)], fill=fill_rgb)
     return img
 
 
 def send_high_risk_windows_toast(title: str, message: str, dashboard_url: str) -> None:
-    """Fires a native Windows toast notification when a High-risk threat is detected."""
     if sys.platform != "win32" or Notification is None:
         return
     try:
@@ -104,7 +103,7 @@ def send_high_risk_windows_toast(title: str, message: str, dashboard_url: str) -
 
 
 class TrayManager:
-    """Manages the pystray system tray icon and menu options."""
+    """Manages the pystray system tray icon and menu options, including Copy Extension Token."""
 
     def __init__(
         self,
@@ -126,6 +125,7 @@ class TrayManager:
         menu = pystray.Menu(
             pystray.MenuItem("Open Dashboard", self._open_dashboard, default=True),
             pystray.MenuItem("Recent Alerts / Explanation Card", lambda icon, item: self.on_open_alerts()),
+            pystray.MenuItem("Copy Extension Token", self._copy_extension_token),
             pystray.MenuItem("Pause Protection for 15 Min", self._pause_15m),
             pystray.MenuItem(
                 lambda item: "Resume Protection" if self.is_paused else "Pause Until Resumed",
@@ -149,6 +149,19 @@ class TrayManager:
             menu,
         )
         threading.Thread(target=self.icon.run, name="TrustLensTray", daemon=True).start()
+
+    def _copy_extension_token(self, icon: Any, item: Any) -> None:
+        tok = get_extension_token()
+        try:
+            pyperclip.copy(tok)
+            log.info("Extension token copied to clipboard via tray menu.")
+            send_high_risk_windows_toast(
+                "🔑 Extension Token Copied",
+                "Paste this token into the TrustLens Browser Extension Options page.",
+                self.dashboard_url,
+            )
+        except Exception as e:
+            log.warning("Could not copy extension token to clipboard: %s", e)
 
     def update_visual_state(self, color: str, unread_count: int = 0) -> None:
         self.unread_count = unread_count

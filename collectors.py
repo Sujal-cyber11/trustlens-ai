@@ -1,15 +1,15 @@
-"""Supervised, crash-resilient OS background collectors for TrustLens AI.
+"""Supervised, crash-resilient OS background collectors and settings manager for TrustLens AI.
 
-Monitors:
-1. Windows Toast Notifications (tries winsdk UserNotificationListener first, falls back to
-   copying %LOCALAPPDATA%\\Microsoft\\Windows\\Notifications\\wpndatabase.db + -wal + -shm).
-2. System Clipboard Text (pyperclip, 1.0s interval, skips trivial short numbers, LRU deduped).
-3. System Clipboard Images (PIL.ImageGrab.grabclipboard, 2.0s interval, SHA-256 deduped).
-4. User Screenshots Directory (watchdog observer on %USERPROFILE%\\Pictures\\Screenshots).
+Fixes included (BUG 1 & BUG 3):
+- Generates `extension_token` with `secrets.token_urlsafe(32)` at startup and saves atomically
+  in %LOCALAPPDATA%\\TrustLens\\settings.json. Never logs the token.
+- Prevents self-scan loops: skips any clipboard text or notification carrying TRUSTLENS_INTERNAL_MARKER
+  or matching TrustLens alert/popup/dashboard text, and skips localhost / 127.0.0.1 / private IPs.
 """
 from __future__ import annotations
 
 from collections import OrderedDict
+import ctypes
 import hashlib
 import io
 import json
@@ -17,6 +17,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import sqlite3
 import sys
@@ -31,6 +32,13 @@ import pyperclip
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from heuristics import (
+    TRUSTLENS_INTERNAL_MARKER,
+    extract_first_url_or_domain,
+    is_local_or_private_host,
+    is_trustlens_internal_text,
+)
+
 log = logging.getLogger("trustlens.collectors")
 
 SETTINGS_PATH = Path(os.path.expandvars(r"%LOCALAPPDATA%\TrustLens\settings.json"))
@@ -43,52 +51,116 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "start_with_windows": True,
     "language": "en",
     "paused_until": 0.0,
+    "extension_token": "",
 }
 
 _settings_lock = threading.RLock()
 
 
-def load_settings() -> dict[str, Any]:
-    """Loads user consent and source preferences from %LOCALAPPDATA%\\TrustLens\\settings.json."""
-    with _settings_lock:
-        if not SETTINGS_PATH.exists():
-            return dict(DEFAULT_SETTINGS)
+def _write_settings_unlocked(data: dict[str, Any]) -> bool:
+    try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(SETTINGS_PATH.parent), prefix=".settings_", suffix=".tmp")
         try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            merged = dict(DEFAULT_SETTINGS)
-            if isinstance(raw, dict):
-                merged.update(raw)
-            return merged
-        except (OSError, json.JSONDecodeError) as e:
-            log.warning("Could not read settings.json (%s); using defaults.", e)
-            return dict(DEFAULT_SETTINGS)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(SETTINGS_PATH))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        return True
+    except OSError as e:
+        log.error("Failed to write settings.json: %s", e)
+        return False
+
+
+def load_settings() -> dict[str, Any]:
+    """Loads user settings and guarantees a 32-byte URL-safe extension_token saved atomically."""
+    with _settings_lock:
+        merged = dict(DEFAULT_SETTINGS)
+        need_save = False
+        if SETTINGS_PATH.exists():
+            try:
+                with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    merged.update(raw)
+            except (OSError, json.JSONDecodeError) as e:
+                log.warning("Could not read settings.json (%s); regenerating defaults.", e)
+                need_save = True
+        else:
+            need_save = True
+
+        if not merged.get("extension_token") or len(str(merged["extension_token"])) < 32:
+            merged["extension_token"] = secrets.token_urlsafe(32)
+            need_save = True
+
+        if need_save:
+            _write_settings_unlocked(merged)
+        return merged
 
 
 def save_settings(new_settings: dict[str, Any]) -> bool:
-    """Atomically writes user settings to %LOCALAPPDATA%\\TrustLens\\settings.json."""
+    """Atomically updates user settings in %LOCALAPPDATA%\\TrustLens\\settings.json."""
     with _settings_lock:
-        try:
-            SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-            merged = load_settings()
-            merged.update(new_settings)
-            fd, tmp_path = tempfile.mkstemp(dir=str(SETTINGS_PATH.parent), prefix=".settings_", suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(merged, f, indent=2, ensure_ascii=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, str(SETTINGS_PATH))
-            except BaseException:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-            return True
-        except OSError as e:
-            log.error("Failed to save settings.json: %s", e)
-            return False
+        current = load_settings()
+        current.update(new_settings)
+        return _write_settings_unlocked(current)
+
+
+def get_extension_token() -> str:
+    """Returns the shared-secret token required from the browser extension (never logged)."""
+    env_tok = os.environ.get("TRUSTLENS_EXTENSION_TOKEN", "").strip()
+    if env_tok:
+        return env_tok
+    return str(load_settings().get("extension_token", ""))
+
+
+def get_foreground_window_title() -> str:
+    """Returns the title of the active foreground window on Windows to skip TrustLens self-copies."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(length + 1)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value
+    except Exception:
+        return ""
+
+
+def should_skip_collected_text(text: str, source_app: str = "") -> bool:
+    """Skips ONLY: (a) TRUSTLENS_INTERNAL_MARKER, (b) '⚠️ TrustLens:' prefix, (c) localhost/127.0.0.1/private IPs."""
+    if not text or not text.strip():
+        return True
+    stripped = text.strip()
+
+    # (a) Contains TRUSTLENS_INTERNAL_MARKER
+    if TRUSTLENS_INTERNAL_MARKER in stripped:
+        return True
+
+    # (b) Starts with the alert-title prefix "⚠️ TrustLens:" (or without emoji if stripped by OS)
+    if stripped.startswith(("⚠️ TrustLens:", "TrustLens:")):
+        return True
+
+    # (c) URLs/hosts pointing at localhost, 127.0.0.1, or private IP ranges
+    if stripped.lower() in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        return True
+    has_url, _, _, host, _ = extract_first_url_or_domain(stripped)
+    if has_url and host and is_local_or_private_host(host):
+        return True
+
+    return False
 
 
 class BoundedSet:
@@ -100,7 +172,6 @@ class BoundedSet:
         self._lock = threading.Lock()
 
     def add_if_new(self, key: Any) -> bool:
-        """Returns True if key was not present and adds it; False if already seen."""
         with self._lock:
             if key in self._data:
                 self._data.move_to_end(key)
@@ -120,7 +191,6 @@ class BoundedSet:
 
 
 def parse_toast_xml(raw_payload: bytes | str) -> str:
-    """Extracts all <text> nodes and attribution from a Windows toast XML payload."""
     text_str = raw_payload.decode("utf-8", errors="ignore") if isinstance(raw_payload, bytes) else str(raw_payload)
     text_str = text_str.strip()
     if not text_str:
@@ -142,8 +212,6 @@ def parse_toast_xml(raw_payload: bytes | str) -> str:
 
 
 class _ScreenshotFolderHandler(FileSystemEventHandler):
-    """Watchdog event handler that reads newly saved screenshot files."""
-
     def __init__(self, manager: CollectorManager) -> None:
         super().__init__()
         self.manager = manager
@@ -255,7 +323,6 @@ class CollectorManager:
         log.info("All background collectors signaled to stop.")
 
     def _supervised_runner(self, name: str, worker_fn: Callable[[], None]) -> None:
-        """Supervisor wrapper: logs exceptions and restarts crashed collector threads with backoff."""
         backoff = 1.0
         while not self._stop_event.is_set():
             try:
@@ -267,7 +334,6 @@ class CollectorManager:
                 backoff = min(backoff * 2.0, 30.0)
 
     def _seed_initial_state(self) -> None:
-        """Seeds initial clipboard content and existing notification IDs so startup does not re-scan old items."""
         try:
             initial_clip = pyperclip.paste().strip()
             if initial_clip:
@@ -294,7 +360,6 @@ class CollectorManager:
                 cur.execute("SELECT Id FROM Notification ORDER BY Id ASC")
                 ids = [row[0] for row in cur.fetchall() if row and row[0] is not None]
                 self.seen_notifs.seed(ids)
-                log.info("Seeded %d existing Windows notification IDs.", len(ids))
             finally:
                 conn.close()
         except Exception as e:
@@ -310,11 +375,9 @@ class CollectorManager:
                     curr = pyperclip.paste().strip()
                     if curr and curr != last_raw and 5 <= len(curr) <= 10_000:
                         last_raw = curr
-                        # Skip trivial pure numbers (e.g. copying a 4-digit number or calculator output)
-                        if not re.fullmatch(r"[\d\s.,+-]+", curr):
+                        if not re.fullmatch(r"[\d\s.,+-]+", curr) and not should_skip_collected_text(curr):
                             digest = hashlib.sha256(curr.encode("utf-8", errors="replace")).hexdigest()
                             if self.seen_texts.add_if_new(digest):
-                                log.info("Clipboard text captured (%d chars).", len(curr))
                                 self.emit_event({
                                     "type": "text",
                                     "source": "Clipboard (Ctrl+C)",
@@ -334,14 +397,12 @@ class CollectorManager:
                     if clip_obj is not None and hasattr(clip_obj, "save"):
                         thumb = clip_obj.copy()
                         thumb.thumbnail((128, 128))
-                        raw_thumb = thumb.tobytes()
-                        digest = hashlib.sha256(raw_thumb).hexdigest()
+                        digest = hashlib.sha256(thumb.tobytes()).hexdigest()
                         if self.seen_images.add_if_new(digest):
                             buf = io.BytesIO()
                             clip_obj.convert("RGB").save(buf, format="PNG")
                             img_bytes = buf.getvalue()
                             if 100 < len(img_bytes) <= 8 * 1024 * 1024:
-                                log.info("Clipboard screenshot captured (%d bytes).", len(img_bytes))
                                 self.emit_event({
                                     "type": "image",
                                     "source": "Clipboard Screenshot (Win+Shift+S)",
@@ -353,7 +414,6 @@ class CollectorManager:
             self._stop_event.wait(2.0)
 
     def _try_winsdk_notifications(self) -> list[tuple[Any, str, str]] | None:
-        """Optional primary method via winsdk UserNotificationListener; returns None if unavailable or denied."""
         if sys.platform != "win32":
             return None
         try:
@@ -366,8 +426,7 @@ class CollectorManager:
             listener = UserNotificationListener.current
             if listener is None:
                 return None
-            access = listener.get_access_status()
-            if access != UserNotificationListenerAccessStatus.ALLOWED:
+            if listener.get_access_status() != UserNotificationListenerAccessStatus.ALLOWED:
                 return None
             notifs = listener.get_notifications_async(NotificationKinds.TOAST).get()
             results: list[tuple[Any, str, str]] = []
@@ -378,20 +437,19 @@ class CollectorManager:
                     if n.app_info and n.app_info.display_info:
                         app_name = n.app_info.display_info.display_name or app_name
                 except Exception as e:
-                    log.debug("winsdk app_info read note: %s", e)
+                    log.debug("winsdk app_info note: %s", e)
                 binding = n.notification.visual.get_binding("ToastGeneric")
                 if binding:
                     elems = binding.get_text_elements()
                     text = " — ".join(el.text.strip() for el in elems if el.text and el.text.strip())
-                    if len(text) >= 5:
+                    if len(text) >= 5 and not should_skip_collected_text(text, app_name):
                         results.append((n_id, app_name, text))
             return results
         except Exception as e:
-            log.debug("winsdk notification listener unavailable (%s); using SQLite DB fallback.", e)
+            log.debug("winsdk listener fallback to SQLite: %s", e)
             return None
 
     def _poll_wpndatabase(self) -> list[tuple[Any, str, str]]:
-        """Reads new toast rows by copying wpndatabase.db + -wal + -shm to a temp directory."""
         if sys.platform != "win32":
             return []
         db_path = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db")
@@ -427,8 +485,8 @@ class CollectorManager:
 
                 for r_id, handler_name, payload in fetched:
                     parsed_text = parse_toast_xml(payload)
-                    if len(parsed_text) >= 5:
-                        app_label = str(handler_name or "Windows Notification").split("!")[-1][:40]
+                    app_label = str(handler_name or "Windows Notification").split("!")[-1][:40]
+                    if len(parsed_text) >= 5 and not should_skip_collected_text(parsed_text, app_label):
                         rows_out.append((r_id, app_label, parsed_text))
             finally:
                 conn.close()
@@ -449,10 +507,8 @@ class CollectorManager:
 
                 for notif_id, app_label, msg_text in entries:
                     if self.seen_notifs.add_if_new(notif_id):
-                        # Also check text hash so identical toast updates don't spam
                         text_digest = hashlib.sha256(msg_text.encode("utf-8", errors="replace")).hexdigest()
                         if self.seen_texts.add_if_new(text_digest):
-                            log.info("Windows Toast captured from %s: %s", app_label, msg_text[:60])
                             self.emit_event({
                                 "type": "text",
                                 "source": f"Notification ({app_label})",
@@ -472,7 +528,6 @@ class CollectorManager:
                 try:
                     observer.schedule(_ScreenshotFolderHandler(self), str(folder), recursive=False)
                     watched_any = True
-                    log.info("Watching Screenshots folder: %s", folder)
                 except Exception as e:
                     log.warning("Could not watch folder %s: %s", folder, e)
         if watched_any:

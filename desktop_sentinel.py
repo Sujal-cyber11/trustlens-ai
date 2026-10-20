@@ -1,13 +1,8 @@
 """CustomTkinter ambient desktop UI for TrustLens AI.
 
-Features:
-- Main root window stays withdrawn (invisible) when idle.
-- First-run privacy & source consent screen stored in %LOCALAPPDATA%\\TrustLens\\settings.json.
-- Floating corner shield badge stays hidden until at least 1 suspicious item arrives.
-- Scrollable multi-threat explanation card showing all unread threats (newest first),
-  full untruncated text, bilingual EN/HI toggle, 1-click Cybercrime 1930 report button,
-  and 'This was safe' / 'Confirm scam' feedback buttons wired to mutate_memory.
-- All Tkinter calls execute strictly on the main UI thread via root.after().
+Fixes included (BUG 3):
+- Tags all copied cybercrime report strings with TRUSTLENS_INTERNAL_MARKER ('[TL_INTERNAL]')
+  so the background clipboard collector never re-scans text copied from the TrustLens UI.
 """
 from __future__ import annotations
 
@@ -16,14 +11,15 @@ import logging
 import os
 import queue
 import threading
-import webbrowser
 from typing import Any, Callable
+import webbrowser
 
 import customtkinter as ctk
 import pyperclip
 import requests
 
-from collectors import load_settings, save_settings
+from collectors import get_extension_token, load_settings, save_settings
+from heuristics import TRUSTLENS_INTERNAL_MARKER
 
 log = logging.getLogger("trustlens.ui")
 
@@ -40,7 +36,7 @@ class FirstRunConsentDialog(ctk.CTkToplevel):
         super().__init__(master)
         self.on_complete = on_complete
         self.title("TrustLens AI — Privacy & Protection Setup")
-        self.geometry("540x430")
+        self.geometry("540x450")
         self.resizable(False, False)
         self.attributes("-topmost", True)
         self.configure(fg_color="#0B1120")
@@ -56,7 +52,7 @@ class FirstRunConsentDialog(ctk.CTkToplevel):
             self,
             text=(
                 "TrustLens runs quietly in the background to protect you from phishing links, "
-                "visual homoglyphs (arnazon.com), UPI collect traps, and fake urgency scams.\n\n"
+                "visual homoglyphs (arnazon.com), UPI collect traps, and web dark patterns.\n\n"
                 "🔒 Privacy Guarantee: Phone numbers, card numbers, emails, and OTPs are automatically "
                 "redacted ([REDACTED]) on your device BEFORE any cloud AI check."
             ),
@@ -190,7 +186,6 @@ class ThreatExplanationDrawer(ctk.CTkToplevel):
         self.current_index = 0
         self.lang = load_settings().get("language", "en")
 
-        # Top navigation bar
         top = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=8)
         top.pack(fill="x", padx=12, pady=(12, 6))
 
@@ -214,7 +209,6 @@ class ThreatExplanationDrawer(ctk.CTkToplevel):
         )
         self.lang_btn.pack(side="right", padx=6, pady=6)
 
-        # Scrollable content area (never truncates explanations)
         self.scroll = ctk.CTkScrollableFrame(self, fg_color="#0F172A", corner_radius=8)
         self.scroll.pack(fill="both", expand=True, padx=12, pady=6)
 
@@ -238,7 +232,6 @@ class ThreatExplanationDrawer(ctk.CTkToplevel):
         self.actions_lbl = self._add_section("✅ Recommended Safe Actions", "#6EE7B7")
         self.indicators_lbl = self._add_section("🔍 Technical Indicators & Score Math", "#94A3B8")
 
-        # Privacy note
         ctk.CTkLabel(
             self,
             text="🔒 Privacy: Phone numbers, card numbers, emails & OTPs are redacted locally before cloud analysis.",
@@ -246,7 +239,6 @@ class ThreatExplanationDrawer(ctk.CTkToplevel):
             text_color="#64748B",
         ).pack(padx=12, pady=(2, 2))
 
-        # Action & Feedback Buttons
         bottom = ctk.CTkFrame(self, fg_color="transparent")
         bottom.pack(fill="x", padx=12, pady=(4, 12))
 
@@ -325,13 +317,17 @@ class ThreatExplanationDrawer(ctk.CTkToplevel):
         analysis = item.get("analysis", {})
         risk = analysis.get("overall_risk_score", "High")
         score = analysis.get("numeric_risk_score", 85)
+        mal_s = analysis.get("malicious_score", score)
+        dp_s = analysis.get("dark_pattern_score", 0)
         cat = analysis.get("fraud_category", "Suspicious Activity")
         src = item.get("source", "Background")
         ts = item.get("timestamp", "")
 
         self.nav_lbl.configure(text=f"Threat {self.current_index + 1} of {len(items)}  •  {src} ({ts})")
         self.risk_banner.configure(fg_color="#991B1B" if risk == "High" else "#B45309")
-        self.risk_title.configure(text=f"⚠️ {risk.upper()} RISK ({score}/100) — {cat}")
+        self.risk_title.configure(
+            text=f"⚠️ {risk.upper()} RISK ({score}/100) — {cat}\n[Malicious: {mal_s}/100 | Dark Patterns: {dp_s}/100]"
+        )
 
         use_hi = self.lang == "hi"
         calm = analysis.get("calm_down_message_hi" if use_hi else "calm_down_message") or analysis.get("calm_down_message", "")
@@ -361,17 +357,19 @@ class ThreatExplanationDrawer(ctk.CTkToplevel):
             return
         item = items[self.current_index]
         heur = item.get("heuristics", {})
+        dom = heur.get("domain") or None
 
         def _post() -> None:
             try:
                 requests.post(
                     f"{API_BASE}/api/feedback",
+                    headers={"X-TrustLens-Token": get_extension_token()},
                     json={
                         "item_id": item.get("id", ""),
-                        "input_snippet": item.get("input", ""),
-                        "domain": heur.get("domain") or None,
+                        "input_snippet": dom or "",
+                        "domain": dom,
                         "feedback_type": fb_type,
-                        "lesson_note": f"User marked '{item.get('input', '')[:60]}' as {fb_type}.",
+                        "lesson_note": f"Verified {fb_type} on domain {dom}" if dom else "",
                     },
                     timeout=5.0,
                 )
@@ -390,7 +388,7 @@ class ThreatExplanationDrawer(ctk.CTkToplevel):
         item = items[self.current_index]
         analysis = item.get("analysis", {})
         report_text = (
-            "=== TRUSTLENS AI CYBERCRIME INCIDENT REPORT ===\n"
+            f"{TRUSTLENS_INTERNAL_MARKER} === TRUSTLENS AI CYBERCRIME INCIDENT REPORT ===\n"
             f"Timestamp: {item.get('timestamp')}\n"
             f"Source Channel: {item.get('source')}\n"
             f"Risk Score: {analysis.get('overall_risk_score')} ({analysis.get('numeric_risk_score')}/100)\n"
@@ -433,15 +431,12 @@ class AmbientDesktopUI(ctk.CTk):
             FirstRunConsentDialog(self, on_complete=lambda: log.info("First-run consent completed."))
 
     def push_judged_record(self, record: dict[str, Any]) -> None:
-        """Thread-safe entrypoint called when the backend finishes judging an item."""
         self.ui_queue.put(("record", record))
 
     def request_open_drawer(self) -> None:
-        """Thread-safe entrypoint called from tray icon or toast click."""
         self.ui_queue.put(("open_drawer", None))
 
     def request_shutdown(self) -> None:
-        """Thread-safe entrypoint to stop the Tk mainloop cleanly."""
         self.ui_queue.put(("shutdown", None))
 
     def _process_ui_queue(self) -> None:
@@ -477,7 +472,6 @@ class AmbientDesktopUI(ctk.CTk):
 
     def open_explanation_drawer(self) -> None:
         if not self.unread_threats and self.history_threats:
-            # Show most recent item if user opens Recent Alerts manually
             self.unread_threats.appendleft(self.history_threats[0])
         if not self.unread_threats:
             webbrowser.open(API_BASE)

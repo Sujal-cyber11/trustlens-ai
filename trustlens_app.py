@@ -1,12 +1,4 @@
-"""Unified single-process background entry point for TrustLens AI.
-
-Runnable with python.exe or pythonw.exe (zero console windows):
-- Configures RotatingFileHandler at %LOCALAPPDATA%\\TrustLens\\logs\\trustlens.log.
-- Enforces single-instance lock via Windows named mutex (or lockfile fallback);
-  if a second instance is launched, brings the dashboard forward and exits cleanly.
-- Runs the FastAPI Uvicorn server in a daemon thread bound to 127.0.0.1:8000.
-- Runs the system tray icon (pystray) and withdrawn CustomTkinter UI in the same process.
-"""
+"""Unified single-process background entry point for TrustLens AI."""
 from __future__ import annotations
 
 import ctypes
@@ -64,7 +56,7 @@ class SingleInstanceGuard:
             mutex_name = "Global\\TrustLensAISingleInstanceMutex_v2"
             handle = kernel32.CreateMutexW(None, True, mutex_name)
             last_err = kernel32.GetLastError()
-            if last_err == 183:  # ERROR_ALREADY_EXISTS
+            if last_err == 183:
                 return False
             self.mutex_handle = handle
             return True
@@ -116,7 +108,6 @@ class UnifiedApplication:
         if settings.get("consent_given") and settings.get("start_with_windows", True):
             set_autostart_enabled(True)
 
-        # 1. Start FastAPI Uvicorn server in daemon thread
         config = uvicorn.Config(
             backend_main.app,
             host="127.0.0.1",
@@ -128,10 +119,8 @@ class UnifiedApplication:
         self.server_thread = threading.Thread(target=self.uvicorn_server.run, name="UvicornThread", daemon=True)
         self.server_thread.start()
 
-        # 2. Initialize withdrawn CustomTkinter UI on main thread
         self.ui = AmbientDesktopUI(on_status_change=self._on_ui_badge_change)
 
-        # 3. Initialize System Tray icon
         self.tray = TrayManager(
             dashboard_url=DASHBOARD_URL,
             on_open_alerts=self.ui.request_open_drawer,
@@ -140,13 +129,11 @@ class UnifiedApplication:
         )
         self.tray.start_in_thread()
 
-        # 4. Subscribe to real-time backend audit completions
         backend_main.register_alert_listener(self._on_item_judged)
 
         if "--demo" in sys.argv:
             threading.Thread(target=self._trigger_cli_demo, daemon=True).start()
 
-        # Run Tk mainloop on main thread
         try:
             self.ui.mainloop()
         finally:

@@ -1,4 +1,16 @@
-"""FastAPI backend, sequential queue processor, rate limiter, and unified audit service for TrustLens AI."""
+"""FastAPI backend for TrustLens AI (Desktop + Browser Extension Guardian).
+
+Fixes included:
+- BUG 1: FastAPI dependency `verify_extension_token` applied to `/api/audit-page` and `/api/feedback`.
+  Returns HTTP 401 when `X-TrustLens-Token` header is missing and HTTP 403 when it is wrong,
+  using `secrets.compare_digest`. Token is initialized at startup via `secrets.token_urlsafe(32)`
+  and saved atomically in settings.json; never logged.
+- BUG 1 CORS: Allows only configured `chrome-extension://<id>` origins (from `TRUSTLENS_EXTENSION_ORIGINS`)
+  plus `http://127.0.0.1:8000` and `http://localhost:8000`, with NO wildcard.
+- BUG 3: System-only verdicts only increment scan/TP/TN counters and never alter heuristic weights
+  or blacklists; only explicit user feedback updates weights (idempotently +/-1, clamped) and blacklists.
+  Startup migration cleans any poisoned memory entries.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -6,17 +18,19 @@ from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 import hashlib
 import ipaddress
+import json
 import logging
 import os
+import secrets
 import socket
-import time
 import threading
+import time
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 import requests
 import uvicorn
@@ -24,23 +38,68 @@ import uvicorn
 from ai_auditor import (
     AIUnavailableError,
     PhishingAuditResult,
+    apply_user_feedback,
     audit_blueprint_with_ai,
     audit_image_with_ai,
+    audit_webpage_with_ai,
     build_offline_heuristic_result,
     downscale_and_validate_image,
     load_memory,
+    migrate_and_clean_memory_on_startup,
     mutate_memory,
 )
-from collectors import CollectorManager, load_settings, save_settings
-from heuristics import WHITELIST_DOMAINS, domain_matches, evaluate_heuristics, scrub_pii
+from collectors import (
+    CollectorManager,
+    get_extension_token,
+    load_settings,
+    save_settings,
+    should_skip_collected_text,
+)
+from heuristics import evaluate_heuristics, is_local_or_private_host, scrub_pii
+from page_analysis import PageAuditRequest, evaluate_page_signals, strip_url_query_and_fragment
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 log = logging.getLogger("trustlens.api")
 
 MAX_INPUT_CHARS = 20_000
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+MAX_PAGE_AUDIT_BODY_BYTES = 64 * 1024
 MIN_AI_CALL_INTERVAL_S = 1.2
 ITEM_AUDIT_TIMEOUT_S = 25.0
+
+# Load and cache token at module initialization (and refresh on startup)
+_STARTUP_TOKEN: str = get_extension_token()
+
+
+def get_active_token() -> str:
+    global _STARTUP_TOKEN
+    tok = get_extension_token()
+    if tok:
+        _STARTUP_TOKEN = tok
+    return _STARTUP_TOKEN
+
+
+async def verify_extension_token(
+    x_trustlens_token: str | None = Header(default=None, alias="X-TrustLens-Token"),
+) -> str:
+    """
+    FastAPI dependency enforcing shared-secret authentication:
+    - Returns HTTP 401 when X-TrustLens-Token header is missing or empty.
+    - Returns HTTP 403 when X-TrustLens-Token does not match via secrets.compare_digest.
+    """
+    if x_trustlens_token is None or not x_trustlens_token.strip():
+        raise HTTPException(
+            status_code=401,
+            detail="Missing X-TrustLens-Token header.",
+        )
+    expected = get_active_token()
+    supplied = x_trustlens_token.strip()
+    if not expected or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid X-TrustLens-Token header.",
+        )
+    return supplied
 
 
 class AuditRequest(BaseModel):
@@ -70,6 +129,32 @@ class SettingsUpdateRequest(BaseModel):
 
 class URLSafetyRequest(BaseModel):
     url: str = Field(..., min_length=3, max_length=2048)
+
+
+class OriginRateLimiter:
+    """Bounded per-origin sliding-window rate limiter (max 60 requests / 60s per origin)."""
+
+    def __init__(self, max_requests: int = 60, window_seconds: float = 60.0) -> None:
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._buckets: OrderedDict[str, deque[float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def allow(self, origin_key: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            bucket = self._buckets.get(origin_key)
+            if bucket is None:
+                bucket = deque()
+                self._buckets[origin_key] = bucket
+                while len(self._buckets) > 256:
+                    self._buckets.popitem(last=False)
+            while bucket and (now - bucket[0]) > self.window_seconds:
+                bucket.popleft()
+            if len(bucket) >= self.max_requests:
+                return False
+            bucket.append(now)
+            return True
 
 
 class BoundedState:
@@ -113,12 +198,12 @@ class BoundedState:
 
 
 state = BoundedState()
+rate_limiter = OriginRateLimiter()
 collector_manager: CollectorManager | None = None
 _worker_stop = threading.Event()
 
 
 def register_alert_listener(cb: Callable[[dict[str, Any]], None]) -> None:
-    """Allows the desktop UI and system tray to receive real-time callbacks when an item is judged."""
     with state.lock:
         state.alert_listeners.append(cb)
 
@@ -128,50 +213,36 @@ def _hash_key(data: str | bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _apply_auto_calibration_and_metrics(raw_text: str, heuristics: dict[str, Any], result: PhishingAuditResult) -> None:
-    """Updates agent_memory.json metrics, blacklists, and Pass-1 vs Pass-2 auto-calibration."""
+def _record_system_metrics_only(heuristics: dict[str, Any], result: PhishingAuditResult) -> None:
+    """
+    Records telemetry counters (tp/tn/auto_fp_corrected/auto_fn_caught) without mutating
+    heuristic weights or blacklisting domains on system-only verdicts (BUG 3 Rule 2 & 3).
+    """
     p1_flagged = int(heuristics.get("pass1_naive_score", 0)) >= 31
     final_flagged = result.is_suspicious
-    host = str(heuristics.get("domain") or "").lower().strip()
-    whitelisted = bool(heuristics.get("whitelisted", False))
-    redacted_snippet = scrub_pii(raw_text)[:60]
 
     def _update(mem: dict[str, Any]) -> None:
-        metrics = mem.setdefault("metrics", {"tp": 0, "tn": 0, "fp": 0, "fn": 0, "auto_fp_corrected": 0, "auto_fn_caught": 0})
-        weights = mem.setdefault("weights", {})
-        audit_log = mem.setdefault("auto_audit_log", [])
-
+        metrics = mem.setdefault(
+            "metrics",
+            {"tp": 0, "tn": 0, "fp": 0, "fn": 0, "auto_fp_corrected": 0, "auto_fn_caught": 0, "browser_pages_scanned": 0, "dark_patterns_found": 0},
+        )
         if p1_flagged and not final_flagged:
             metrics["auto_fp_corrected"] = metrics.get("auto_fp_corrected", 0) + 1
             metrics["tn"] = metrics.get("tn", 0) + 1
-            weights["urgency_penalty"] = max(10, int(weights.get("urgency_penalty", 25)) - 1)
-            entry = f"[AUTO-FP SUPPRESSED] Cleared safe alert: '{redacted_snippet}'"
-            if entry not in audit_log:
-                audit_log.append(entry)
             result.auto_calibration_action = (
                 "🤖 AUTO-FP SUPPRESSED: Naive keyword pass flagged urgency/OTP terms, "
-                "but Contextual Judge verified safe intent and reduced urgency_penalty (-1)."
+                "but Contextual Judge verified safe intent."
             )
         elif not p1_flagged and final_flagged:
             metrics["auto_fn_caught"] = metrics.get("auto_fn_caught", 0) + 1
             metrics["tp"] = metrics.get("tp", 0) + 1
-            weights["brand_spoof_penalty"] = min(75, int(weights.get("brand_spoof_penalty", 45)) + 2)
-            if host and not whitelisted and result.numeric_risk_score >= 70:
-                if host not in mem["blacklisted_domains"]:
-                    mem["blacklisted_domains"].append(host)
-            entry = f"[AUTO-FN CAUGHT] Caught stealthy threat: '{host or redacted_snippet}'"
-            if entry not in audit_log:
-                audit_log.append(entry)
             result.auto_calibration_action = (
-                f"🤖 AUTO-FN INTERCEPTED: Naive keyword pass missed this ({heuristics.get('pass1_naive_score')}/100), "
-                f"but Deep Homoglyph/Context Judge caught '{result.fraud_category}' ({result.numeric_risk_score}/100)."
+                f"🤖 AUTO-FN INTERCEPTED: Naive pass missed this ({heuristics.get('pass1_naive_score')}/100), "
+                f"but Contextual Judge caught '{result.fraud_category}' ({result.numeric_risk_score}/100)."
             )
         else:
             if final_flagged:
                 metrics["tp"] = metrics.get("tp", 0) + 1
-                if host and not whitelisted and result.numeric_risk_score >= 75:
-                    if host not in mem["blacklisted_domains"]:
-                        mem["blacklisted_domains"].append(host)
             else:
                 metrics["tn"] = metrics.get("tn", 0) + 1
 
@@ -179,7 +250,6 @@ def _apply_auto_calibration_and_metrics(raw_text: str, heuristics: dict[str, Any
 
 
 def _respect_ai_rate_limit() -> None:
-    """Enforces a minimum interval between Gemini calls so clipboard bursts cannot exhaust quota."""
     with state.lock:
         now = time.monotonic()
         elapsed = now - state.last_ai_call_ts
@@ -190,7 +260,6 @@ def _respect_ai_rate_limit() -> None:
 
 
 async def perform_text_audit(text: str, source: str = "Manual Input", record_in_feed: bool = True) -> dict[str, Any]:
-    """Unified service function used by both REST endpoints and the background queue worker."""
     cleaned = text.strip()[:MAX_INPUT_CHARS]
     if not cleaned:
         raise HTTPException(status_code=400, detail="Input text is empty.")
@@ -214,7 +283,7 @@ async def perform_text_audit(text: str, source: str = "Manual Input", record_in_
         log.info("Using offline heuristic verdict (%s)", type(e).__name__)
         ai_res = build_offline_heuristic_result(heuristics)
 
-    _apply_auto_calibration_and_metrics(cleaned, heuristics, ai_res)
+    _record_system_metrics_only(heuristics, ai_res)
 
     item_id = cache_key[:12]
     payload: dict[str, Any] = {
@@ -231,8 +300,90 @@ async def perform_text_audit(text: str, source: str = "Manual Input", record_in_
     return payload
 
 
+async def perform_page_audit(req: PageAuditRequest, record_in_feed: bool = True) -> dict[str, Any]:
+    """Audits a browser webpage's structural signals, merging deterministic rules with Gemini when needed."""
+    host = req.hostname.lower().strip(".")
+    if is_local_or_private_host(host):
+        clean_url = strip_url_query_and_fragment(req.url)
+        # Skip blacklisting or alerting on localhost/127.0.0.1 unless it is an explicit demo test page with signals
+        if not req.signals:
+            safe_heur = evaluate_page_signals(req, load_memory())
+            safe_res = build_offline_heuristic_result(safe_heur)
+            return {
+                "status": "success",
+                "id": "local_safe",
+                "source": "Browser",
+                "timestamp": time.strftime("%I:%M:%S %p"),
+                "input": clean_url,
+                "heuristics": safe_heur,
+                "analysis": safe_res.model_dump(),
+            }
+
+    clean_url = strip_url_query_and_fragment(req.url)
+    sig_fingerprint = "|".join(f"{s.id}:{s.count}:{s.evidence[:30]}" for s in req.signals)
+    cache_key = "page_" + _hash_key(f"{clean_url}|{sig_fingerprint}|{req.language}")
+
+    cached = state.get_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    memory = load_memory()
+    page_heur = evaluate_page_signals(req, memory)
+    redacted_sample = scrub_pii(req.text_sample[:500])
+
+    if page_heur.get("needs_ai"):
+        summary_for_ai = {
+            "url": clean_url,
+            "hostname": host,
+            "title": scrub_pii(req.title[:200]),
+            "signals": [s.model_dump() for s in req.signals],
+            "text_sample": redacted_sample,
+        }
+
+        def _run_page_ai() -> PhishingAuditResult:
+            _respect_ai_rate_limit()
+            return audit_webpage_with_ai(summary_for_ai, page_heur)
+
+        try:
+            ai_res = await asyncio.wait_for(asyncio.to_thread(_run_page_ai), timeout=ITEM_AUDIT_TIMEOUT_S)
+        except (AIUnavailableError, asyncio.TimeoutError, Exception) as e:
+            log.info("Page audit using deterministic result (%s)", type(e).__name__)
+            ai_res = build_offline_heuristic_result(page_heur)
+    else:
+        ai_res = build_offline_heuristic_result(page_heur)
+
+    dp_found_count = int(page_heur.get("dark_pattern_count", 0))
+
+    def _update_browser_metrics(mem: dict[str, Any]) -> None:
+        metrics = mem.setdefault(
+            "metrics",
+            {"tp": 0, "tn": 0, "fp": 0, "fn": 0, "auto_fp_corrected": 0, "auto_fn_caught": 0, "browser_pages_scanned": 0, "dark_patterns_found": 0},
+        )
+        metrics["browser_pages_scanned"] = metrics.get("browser_pages_scanned", 0) + 1
+        if dp_found_count > 0 or ai_res.dark_pattern_score >= 31:
+            metrics["dark_patterns_found"] = metrics.get("dark_patterns_found", 0) + max(1, dp_found_count)
+        if ai_res.is_suspicious:
+            metrics["tp"] = metrics.get("tp", 0) + 1
+        else:
+            metrics["tn"] = metrics.get("tn", 0) + 1
+
+    mutate_memory(_update_browser_metrics)
+
+    payload: dict[str, Any] = {
+        "status": "success",
+        "id": cache_key[:12],
+        "source": "Browser",
+        "timestamp": time.strftime("%I:%M:%S %p"),
+        "input": f"{clean_url} ({scrub_pii(req.title)[:60]})",
+        "heuristics": page_heur,
+        "analysis": ai_res.model_dump(),
+    }
+    if record_in_feed:
+        state.record_judged(cache_key, payload)
+    return payload
+
+
 async def perform_image_audit(image_bytes: bytes, mime_type: str, source: str = "Screenshot", record_in_feed: bool = True) -> dict[str, Any]:
-    """Unified service function for screenshot auditing (clipboard, folder watchdog, and upload API)."""
     if not image_bytes or len(image_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=400, detail="Image is empty or exceeds 8 MB limit.")
 
@@ -266,6 +417,8 @@ async def perform_image_audit(image_bytes: bytes, mime_type: str, source: str = 
         "domain": "",
         "pass1_naive_score": ai_res.numeric_risk_score,
         "base_score": ai_res.numeric_risk_score,
+        "malicious_score": ai_res.malicious_score or ai_res.numeric_risk_score,
+        "dark_pattern_score": ai_res.dark_pattern_score,
         "impersonation_detected": "impersonat" in ai_res.fraud_category.lower() or "homoglyph" in ai_res.fraud_category.lower(),
     }
 
@@ -284,14 +437,15 @@ async def perform_image_audit(image_bytes: bytes, mime_type: str, source: str = 
 
 
 async def _queue_consumer_loop() -> None:
-    """Async background task pulling items one-by-one from the collector queue."""
     log.info("Sequential queue processor started.")
     while not _worker_stop.is_set():
         item = state.pop_next()
         if item is not None:
             try:
                 if item.get("type") == "text":
-                    await perform_text_audit(str(item["content"]), source=str(item.get("source", "Background")), record_in_feed=True)
+                    content = str(item.get("content", ""))
+                    if not should_skip_collected_text(content, str(item.get("source", ""))):
+                        await perform_text_audit(content, source=str(item.get("source", "Background")), record_in_feed=True)
                 elif item.get("type") == "image":
                     await perform_image_audit(
                         item["content"],
@@ -306,8 +460,10 @@ async def _queue_consumer_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global collector_manager
+    global collector_manager, _STARTUP_TOKEN
     _worker_stop.clear()
+    _STARTUP_TOKEN = get_extension_token()
+    migrate_and_clean_memory_on_startup()
     collector_manager = CollectorManager(on_event_callback=state.enqueue)
     collector_manager.start()
     consumer_task = asyncio.create_task(_queue_consumer_loop())
@@ -318,17 +474,41 @@ async def lifespan(app: FastAPI):
     consumer_task.cancel()
 
 
-app = FastAPI(title="TrustLens AI — Ambient Phishing & Fraud Guardian (CC6-AI05)", lifespan=lifespan)
+app = FastAPI(title="TrustLens AI — Ambient Desktop & Browser Guardian (CC6-AI05)", lifespan=lifespan)
+
+# BUG 1 CORS: Allow only configured chrome-extension://<id> origins plus localhost/127.0.0.1, with NO wildcard.
+_configured_ext_origins = [
+    o.strip()
+    for o in os.environ.get("TRUSTLENS_EXTENSION_ORIGINS", "").split(",")
+    if o.strip().startswith("chrome-extension://")
+]
+_allowed_origins = ["http://127.0.0.1:8000", "http://localhost:8000"] + _configured_ext_origins
+
+
+@app.middleware("http")
+async def security_and_rate_limit_middleware(request: Request, call_next: Callable[[Request], Any]) -> Any:
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    origin = (request.headers.get("origin") or "").strip()
+    client_host = request.client.host if request.client else "127.0.0.1"
+    rate_key = origin or client_host
+
+    if not rate_limiter.allow(rate_key):
+        return JSONResponse(status_code=429, content={"status": "error", "detail": "Rate limit exceeded for origin."})
+
+    if origin and origin not in _allowed_origins:
+        return JSONResponse(status_code=403, content={"status": "error", "detail": "Origin not in allowed CORS origins."})
+
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
-    ],
+    allow_origins=_allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-TrustLens-Token"],
 )
 
 
@@ -344,18 +524,41 @@ async def get_health() -> dict[str, Any]:
     total_eval = tp + tn + fp + fn
     accuracy = round(((tp + tn) / total_eval) * 100.0, 1) if total_eval > 0 else 100.0
 
+    public_settings = {k: v for k, v in settings.items() if k != "extension_token"}
     return {
         "status": "ok",
         "paused": collector_manager.paused if collector_manager else False,
-        "settings": settings,
+        "settings": public_settings,
         "total_scanned": state.total_scanned,
         "queue_pending": len(state.incoming_queue),
         "blacklisted_domains": mem.get("blacklisted_domains", []),
+        "user_allowlist": mem.get("user_allowlist", []),
         "weights": mem.get("weights", {}),
         "metrics": metrics,
         "accuracy_pct": accuracy,
         "auto_audit_log": mem.get("auto_audit_log", [])[-15:],
     }
+
+
+@app.post("/api/audit-page")
+async def api_audit_page(
+    request: Request,
+    _token: str = Depends(verify_extension_token),
+) -> dict[str, Any]:
+    """Audits privacy-safe structural signals sent by the TrustLens Chrome/Edge extension (requires X-TrustLens-Token)."""
+    raw_body = await request.body()
+    if len(raw_body) > MAX_PAGE_AUDIT_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request payload exceeds 64 KB limit.")
+    try:
+        data = json.loads(raw_body.decode("utf-8"))
+        page_req = PageAuditRequest.model_validate(data)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid page audit payload: {e}") from e
+
+    if collector_manager and collector_manager.paused:
+        return {"status": "paused", "detail": "TrustLens protection is currently paused."}
+
+    return await perform_page_audit(page_req, record_in_feed=True)
 
 
 @app.post("/api/audit")
@@ -405,44 +608,22 @@ async def api_get_feed() -> dict[str, Any]:
 
 
 @app.post("/api/feedback")
-async def api_submit_feedback(req: FeedbackRequest) -> dict[str, Any]:
-    clean_domain = (req.domain or "").lower().strip()
-    clean_lesson = " ".join(req.lesson_note.split())[:300]
-
-    def _apply(mem: dict[str, Any]) -> None:
-        metrics = mem.setdefault("metrics", {"tp": 0, "tn": 0, "fp": 0, "fn": 0, "auto_fp_corrected": 0, "auto_fn_caught": 0})
-        weights = mem.setdefault("weights", {})
-        audit_log = mem.setdefault("auto_audit_log", [])
-
-        if req.feedback_type == "false_positive":
-            metrics["fp"] = metrics.get("fp", 0) + 1
-            metrics["auto_fp_corrected"] = metrics.get("auto_fp_corrected", 0) + 1
-            weights["urgency_penalty"] = max(5, int(weights.get("urgency_penalty", 25)) - 3)
-            weights["vague_bait_penalty"] = max(20, int(weights.get("vague_bait_penalty", 55)) - 3)
-            if clean_domain and clean_domain in mem.get("blacklisted_domains", []):
-                mem["blacklisted_domains"].remove(clean_domain)
-            audit_log.append(f"[USER FEEDBACK: SAFE] Lowered urgency/bait weights (-3) on '{scrub_pii(req.input_snippet)[:45]}'")
-
-        elif req.feedback_type in ("confirm_scam", "false_negative"):
-            if req.feedback_type == "false_negative":
-                metrics["fn"] = metrics.get("fn", 0) + 1
-                metrics["auto_fn_caught"] = metrics.get("auto_fn_caught", 0) + 1
-            else:
-                metrics["tp"] = metrics.get("tp", 0) + 1
-            weights["urgency_penalty"] = min(65, int(weights.get("urgency_penalty", 25)) + 3)
-            weights["brand_spoof_penalty"] = min(80, int(weights.get("brand_spoof_penalty", 45)) + 3)
-            if clean_domain and not domain_matches(clean_domain, WHITELIST_DOMAINS):
-                if clean_domain not in mem["blacklisted_domains"]:
-                    mem["blacklisted_domains"].append(clean_domain)
-            audit_log.append(f"[USER FEEDBACK: SCAM] Boosted weights (+3) & blacklisted '{clean_domain or scrub_pii(req.input_snippet)[:45]}'")
-
-        if clean_lesson and clean_lesson not in mem["few_shot_lessons"]:
-            mem["few_shot_lessons"].append(clean_lesson)
-
-    updated = mutate_memory(_apply)
+async def api_submit_feedback(
+    req: FeedbackRequest,
+    _token: str = Depends(verify_extension_token),
+) -> dict[str, Any]:
+    """Updates memory, blacklists, user_allowlist, and bounded weights from explicit user feedback (requires X-TrustLens-Token)."""
+    updated = apply_user_feedback(
+        domain=req.domain,
+        feedback_type=req.feedback_type,
+        lesson_note=req.lesson_note,
+        input_snippet=req.input_snippet,
+    )
     return {
         "status": "success",
-        "message": "Memory weights and metrics updated.",
+        "message": "Memory weights and lists updated.",
+        "blacklisted_domains": updated.get("blacklisted_domains", []),
+        "user_allowlist": updated.get("user_allowlist", []),
         "weights": updated.get("weights", {}),
         "metrics": updated.get("metrics", {}),
     }
@@ -459,11 +640,11 @@ async def api_update_settings(req: SettingsUpdateRequest) -> dict[str, Any]:
         save_settings(updates)
     if req.paused is not None and collector_manager is not None:
         collector_manager.set_paused(req.paused, duration_seconds=req.pause_minutes * 60)
-    return {"status": "success", "settings": load_settings(), "paused": collector_manager.paused if collector_manager else False}
+    public_settings = {k: v for k, v in load_settings().items() if k != "extension_token"}
+    return {"status": "success", "settings": public_settings, "paused": collector_manager.paused if collector_manager else False}
 
 
 def _query_iana_whois(domain: str) -> str:
-    """Performs a lightweight, dependency-free socket WHOIS query for domain creation date, failing gracefully."""
     try:
         tld = domain.split(".")[-1]
         with socket.create_connection(("whois.iana.org", 43), timeout=2.5) as s:
@@ -505,7 +686,6 @@ async def api_url_safety(req: URLSafetyRequest) -> dict[str, Any]:
     if not host:
         raise HTTPException(status_code=400, detail="Invalid URL hostname.")
 
-    # SSRF guard: block private/loopback IPs
     try:
         infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
         for info in infos:
@@ -563,10 +743,25 @@ DEMO_SAMPLES: list[tuple[str, str]] = [
 
 @app.post("/api/demo")
 async def api_trigger_demo() -> dict[str, Any]:
-    """Enqueues all 6 hackathon demo scenarios into the background queue for live evaluation."""
     for label, text in DEMO_SAMPLES:
         state.enqueue({"type": "text", "source": label, "content": text})
     return {"status": "success", "queued_count": len(DEMO_SAMPLES)}
+
+
+@app.get("/demo/dark-patterns")
+async def serve_dark_patterns_demo() -> Any:
+    demo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo", "dark_patterns_demo.html")
+    if os.path.exists(demo_path):
+        return FileResponse(demo_path)
+    raise HTTPException(status_code=404, detail="demo/dark_patterns_demo.html not found.")
+
+
+@app.get("/demo/clean")
+async def serve_clean_demo() -> Any:
+    demo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo", "clean_demo.html")
+    if os.path.exists(demo_path):
+        return FileResponse(demo_path)
+    raise HTTPException(status_code=404, detail="demo/clean_demo.html not found.")
 
 
 @app.get("/")

