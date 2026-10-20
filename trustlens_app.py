@@ -1,4 +1,4 @@
-"""Unified single-process background entry point for TrustLens AI."""
+"""Unified single-process background entry point for TrustLens AI (with Push-to-Talk & Offline SAPI)."""
 from __future__ import annotations
 
 import ctypes
@@ -12,12 +12,18 @@ import time
 from typing import Any
 import webbrowser
 
+import pyperclip
 import uvicorn
 
-from collectors import load_settings
+from collectors import load_settings, save_settings
 from desktop_sentinel import AmbientDesktopUI
 import main as backend_main
 from tray import TrayManager, send_high_risk_windows_toast, set_autostart_enabled
+from voice_assistant import (
+    PushToTalkController,
+    build_alert_speech_text,
+    parse_voice_command,
+)
 
 APP_DATA_DIR = Path(os.path.expandvars(r"%LOCALAPPDATA%\TrustLens"))
 LOG_DIR = APP_DATA_DIR / "logs"
@@ -44,8 +50,6 @@ log = setup_rotating_logger()
 
 
 class SingleInstanceGuard:
-    """Acquires a Windows named mutex and lockfile so a second launch opens the dashboard and exits."""
-
     def __init__(self) -> None:
         self.mutex_handle: Any = None
         self.lock_fd: int | None = None
@@ -88,14 +92,13 @@ class SingleInstanceGuard:
 
 
 class UnifiedApplication:
-    """Coordinates FastAPI Uvicorn server, collectors, tray icon, and CustomTkinter UI in one process."""
-
     def __init__(self) -> None:
         self.guard = SingleInstanceGuard()
         self.uvicorn_server: uvicorn.Server | None = None
         self.server_thread: threading.Thread | None = None
         self.ui: AmbientDesktopUI | None = None
         self.tray: TrayManager | None = None
+        self.ptt: PushToTalkController | None = None
 
     def start(self) -> None:
         if not self.guard.acquire():
@@ -119,15 +122,25 @@ class UnifiedApplication:
         self.server_thread = threading.Thread(target=self.uvicorn_server.run, name="UvicornThread", daemon=True)
         self.server_thread.start()
 
-        self.ui = AmbientDesktopUI(on_status_change=self._on_ui_badge_change)
+        self.ui = AmbientDesktopUI(speaker=backend_main.speaker, on_status_change=self._on_ui_badge_change)
 
         self.tray = TrayManager(
             dashboard_url=DASHBOARD_URL,
             on_open_alerts=self.ui.request_open_drawer,
+            on_open_chat=lambda: self.ui.request_open_chat("", False),
             on_pause_change=self._on_tray_pause_change,
             on_quit=self.shutdown,
         )
         self.tray.start_in_thread()
+
+        self.ptt = PushToTalkController(
+            is_voice_allowed_fn=self._is_voice_allowed,
+            get_hotkey_fn=lambda: str(load_settings().get("ptt_hotkey", "ctrl+alt+t")),
+            on_listening_change=lambda active, txt: self.ui.set_voice_listening_indicator(active, txt) if self.ui else None,
+            on_transcript_ready=self._handle_voice_transcript,
+            on_escape_pressed=backend_main.speaker.stop,
+        )
+        self.ptt.start()
 
         backend_main.register_alert_listener(self._on_item_judged)
 
@@ -138,6 +151,70 @@ class UnifiedApplication:
             self.ui.mainloop()
         finally:
             self._cleanup()
+
+    def _is_voice_allowed(self) -> bool:
+        if backend_main.collector_manager and backend_main.collector_manager.paused:
+            return False
+        s = load_settings()
+        return bool(s.get("consent_given", False)) and bool(s.get("voice_enabled", False))
+
+    def _handle_voice_transcript(self, transcript: str) -> None:
+        if not self._is_voice_allowed() or self.ui is None:
+            return
+        parsed = parse_voice_command(transcript)
+        act = parsed["action"]
+        lang = load_settings().get("language", "en")
+        reply = parsed["reply_hi"] if lang == "hi" else parsed["reply_en"]
+
+        if act == "stop_reading":
+            backend_main.speaker.stop()
+            return
+        if act == "blocked_dangerous":
+            self.ui.request_open_chat("", False)
+            backend_main.speaker.speak(reply, lang)
+            return
+        if act == "check_clipboard":
+            clip = pyperclip.paste().strip()
+            if clip:
+                backend_main.state.enqueue({"type": "text", "source": "Voice Clipboard Check", "content": clip})
+            backend_main.speaker.speak(reply, lang)
+            return
+        if act in ("read_last_alert", "what_is_wrong"):
+            self.ui.request_open_drawer()
+            with backend_main.state.lock:
+                latest = backend_main.state.judged_feed[0] if backend_main.state.judged_feed else None
+            if latest:
+                speech = build_alert_speech_text(latest.get("analysis", {}), lang)
+                backend_main.speaker.speak(speech, lang)
+            else:
+                backend_main.speaker.speak("No alerts found yet." if lang == "en" else "अभी कोई अलर्ट नहीं है।", lang)
+            return
+        if act == "explain_in_hindi":
+            save_settings({"language": "hi"})
+            self.ui.request_open_drawer()
+            backend_main.speaker.speak(parsed["reply_hi"], "hi")
+            return
+        if act == "explain_in_english":
+            save_settings({"language": "en"})
+            self.ui.request_open_drawer()
+            backend_main.speaker.speak(parsed["reply_en"], "en")
+            return
+        if act == "pause_minutes":
+            mins = int(parsed["params"].get("minutes", 15))
+            self._on_tray_pause_change(True, mins)
+            backend_main.speaker.speak(reply, lang)
+            return
+        if act == "resume":
+            self._on_tray_pause_change(False, 0)
+            backend_main.speaker.speak(reply, lang)
+            return
+        if act == "open_dashboard":
+            webbrowser.open(DASHBOARD_URL)
+            backend_main.speaker.speak(reply, lang)
+            return
+        if act == "ask_chatbot":
+            # Send to chatbot and speak reply aloud ONCE because user used push-to-talk
+            self.ui.request_open_chat(initial_context=transcript, speak_reply=True)
 
     def _trigger_cli_demo(self) -> None:
         time.sleep(2.5)
@@ -159,6 +236,8 @@ class UnifiedApplication:
             self.tray.update_visual_state(color, unread_count)
 
     def _on_tray_pause_change(self, paused: bool, minutes: int) -> None:
+        if paused:
+            backend_main.speaker.stop()
         if backend_main.collector_manager is not None:
             backend_main.collector_manager.set_paused(paused, duration_seconds=minutes * 60)
 
@@ -168,7 +247,10 @@ class UnifiedApplication:
             self.ui.request_shutdown()
 
     def _cleanup(self) -> None:
-        log.info("Performing clean shutdown of collectors, Uvicorn, tray, and mutex...")
+        log.info("Performing clean shutdown of collectors, Uvicorn, tray, PTT, and mutex...")
+        if self.ptt is not None:
+            self.ptt.stop()
+        backend_main.speaker.shutdown()
         if backend_main.collector_manager is not None:
             backend_main.collector_manager.stop()
         if self.uvicorn_server is not None:

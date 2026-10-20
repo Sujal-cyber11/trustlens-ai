@@ -1,15 +1,13 @@
 """Supervised, crash-resilient OS background collectors and settings manager for TrustLens AI.
 
-Fixes included (BUG 1 & BUG 3):
-- Generates `extension_token` with `secrets.token_urlsafe(32)` at startup and saves atomically
-  in %LOCALAPPDATA%\\TrustLens\\settings.json. Never logs the token.
-- Prevents self-scan loops: skips any clipboard text or notification carrying TRUSTLENS_INTERNAL_MARKER
-  or matching TrustLens alert/popup/dashboard text, and skips localhost / 127.0.0.1 / private IPs.
+Includes settings for:
+- `voice_enabled` (default False: Voice is OFF until explicitly enabled by user).
+- `auto_read_high_risk` (default False: No automatic speaking unless user turns it on).
+- `ptt_hotkey` (default 'ctrl+alt+t').
 """
 from __future__ import annotations
 
 from collections import OrderedDict
-import ctypes
 import hashlib
 import io
 import json
@@ -36,7 +34,6 @@ from heuristics import (
     TRUSTLENS_INTERNAL_MARKER,
     extract_first_url_or_domain,
     is_local_or_private_host,
-    is_trustlens_internal_text,
 )
 
 log = logging.getLogger("trustlens.collectors")
@@ -49,6 +46,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "monitor_clipboard_text": True,
     "monitor_screenshots": True,
     "start_with_windows": True,
+    "voice_enabled": False,
+    "auto_read_high_risk": False,
+    "ptt_hotkey": "ctrl+alt+t",
     "language": "en",
     "paused_until": 0.0,
     "extension_token": "",
@@ -121,39 +121,18 @@ def get_extension_token() -> str:
     return str(load_settings().get("extension_token", ""))
 
 
-def get_foreground_window_title() -> str:
-    """Returns the title of the active foreground window on Windows to skip TrustLens self-copies."""
-    if sys.platform != "win32":
-        return ""
-    try:
-        hwnd = ctypes.windll.user32.GetForegroundWindow()
-        if not hwnd:
-            return ""
-        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-        if length <= 0:
-            return ""
-        buf = ctypes.create_unicode_buffer(length + 1)
-        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-        return buf.value
-    except Exception:
-        return ""
-
-
 def should_skip_collected_text(text: str, source_app: str = "") -> bool:
     """Skips ONLY: (a) TRUSTLENS_INTERNAL_MARKER, (b) '⚠️ TrustLens:' prefix, (c) localhost/127.0.0.1/private IPs."""
     if not text or not text.strip():
         return True
     stripped = text.strip()
 
-    # (a) Contains TRUSTLENS_INTERNAL_MARKER
     if TRUSTLENS_INTERNAL_MARKER in stripped:
         return True
 
-    # (b) Starts with the alert-title prefix "⚠️ TrustLens:" (or without emoji if stripped by OS)
     if stripped.startswith(("⚠️ TrustLens:", "TrustLens:")):
         return True
 
-    # (c) URLs/hosts pointing at localhost, 127.0.0.1, or private IP ranges
     if stripped.lower() in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
         return True
     has_url, _, _, host, _ = extract_first_url_or_domain(stripped)
@@ -164,8 +143,6 @@ def should_skip_collected_text(text: str, source_app: str = "") -> bool:
 
 
 class BoundedSet:
-    """Thread-safe FIFO-bounded set to prevent unbounded memory growth."""
-
     def __init__(self, max_items: int = 2000) -> None:
         self.max_items = max_items
         self._data: OrderedDict[Any, float] = OrderedDict()
@@ -250,8 +227,6 @@ class _ScreenshotFolderHandler(FileSystemEventHandler):
 
 
 class CollectorManager:
-    """Manages and supervises all background OS collectors with clean shutdown."""
-
     def __init__(self, on_event_callback: Callable[[dict[str, Any]], None]) -> None:
         self.on_event_callback = on_event_callback
         self._stop_event = threading.Event()

@@ -1,20 +1,4 @@
-"""Deterministic webpage malicious-behaviour and dark-pattern analyzer for TrustLens AI.
-
-Fixes included (BUG 2 & BUG 3):
-1. The word 'password', 'sign in', or 'login', or the presence of a password field, is NOT a
-   risk indicator by itself. Credential-demand scoring applies ONLY when combined with at least
-   one real signal: cross-domain or HTTP form action, homoglyph/brand-lookalike domain,
-   suspicious TLD, IP-literal host, blacklisted domain, or explicit urgency/threat wording.
-2. An unknown domain with zero signals and benign text scores Low (0-20). Zero signals plus
-   weak text evidence (e.g. 'Enter your password' on an unknown domain) reaches at most Medium
-   (max 45) and sets needs_ai=True so Gemini confirms before any High alert.
-3. High (66+) requires at least one hard signal or two independent medium signals.
-4. Indicators, calm_down_message, how_it_affects_user, and recommended_actions ONLY describe
-   signals actually detected (never mentioning countdown timers, checkboxes, Win+R, or support
-   numbers when those signals were not detected).
-5. Popular allow-listed domains and user_allowlist domains are capped at 20 unless a hard signal fires.
-6. Blacklist hits set a floor of 80 (not 100) and describe only the blacklist match and detected signals.
-"""
+"""Deterministic webpage analyzer with plain-language templates and real score_breakdown slices."""
 from __future__ import annotations
 
 import ipaddress
@@ -26,9 +10,12 @@ from pydantic import BaseModel, Field, field_validator
 
 from heuristics import (
     BENIGN_ACADEMIC_GOV_SUFFIXES,
+    PLAIN_SIGNAL_TEMPLATES,
     PROTECTED_BRANDS,
     SUSPICIOUS_TLDS,
     WHITELIST_DOMAINS,
+    build_normalized_score_breakdown,
+    default_verdict_line,
     detect_brand_impersonation,
     domain_matches,
     has_explicit_urgency_or_threat,
@@ -72,38 +59,250 @@ class PageAuditRequest(BaseModel):
     language: str = Field("en", pattern="^(en|hi)$")
 
 
-SIGNAL_HUMAN_NAMES: dict[str, tuple[str, str]] = {
-    "cross_domain_password_form": ("Cross-Domain Credential Form", "malicious"),
-    "insecure_http_form": ("Insecure HTTP Credential Form", "malicious"),
-    "password_or_otp_input": ("Password / OTP Input Field", "malicious"),
-    "hidden_or_cross_iframe": ("Hidden Cross-Origin Iframe", "malicious"),
-    "clickjack_overlay": ("Transparent Overlay Over Button/Link", "malicious"),
-    "deceptive_anchor_mismatch": ("Anchor Text vs. Href Domain Mismatch", "malicious"),
-    "suspicious_inline_script": ("Obfuscated Inline Script Calls", "malicious"),
-    "document_write_script": ("Dynamic Script Injection via document.write", "malicious"),
-    "auto_download_trigger": ("Unprompted Automatic Download Trigger", "malicious"),
-    "clipboard_hijack_hook": ("Clipboard Write Override Hook", "malicious"),
-    "contextmenu_or_unload_trap": ("Right-Click Block or Unload Trap", "malicious"),
-    "unprompted_permission_request": ("Permission Request Without User Gesture", "malicious"),
-    "fake_system_dialog": ("Fake System / Virus Alert Dialog", "malicious"),
-    "clickfix_command_trap": ("ClickFix Command Execution Prompt", "malicious"),
-    "fake_support_urgency": ("Fake Tech-Support Helpline With Urgency", "malicious"),
-    "resetting_countdown_timer": ("Countdown Timer Resetting on Reload", "dark_pattern"),
-    "fake_urgency_scarcity": ("Artificial Scarcity / Urgency Wording", "dark_pattern"),
-    "prechecked_addon_box": ("Pre-Checked Add-On / Continuity Checkbox", "dark_pattern"),
-    "forced_continuity_wording": ("Forced Continuity Auto-Renewal Wording", "dark_pattern"),
-    "hidden_drip_pricing": ("Late-Stage Drip Pricing Disclosure", "dark_pattern"),
-    "confirm_shaming": ("Confirm-Shaming Decline Option", "dark_pattern"),
-    "asymmetric_choice_ui": ("Asymmetric Accept vs. Reject Choice Design", "dark_pattern"),
-    "disguised_ad_button": ("Disguised Ad Styled as Control Button", "dark_pattern"),
-    "misdirection_close_button": ("Misdirection Close Button Linking Externally", "dark_pattern"),
-    "nagging_modal": ("Repeated / Unclosable Nagging Modal", "dark_pattern"),
-    "sneak_into_basket": ("Unsolicited Sneak-Into-Basket Item", "dark_pattern"),
+PAGE_SIGNAL_TEMPLATES: dict[str, dict[str, Any]] = {
+    "cross_site_login_form": {
+        "name_en": "Fake Login Box Sending Password Elsewhere",
+        "slice_key": "cross_site_login",
+        "group": "malicious",
+        "about_en": "What this is: A login box that sends your password to strangers.",
+        "about_hi": "यह क्या है: एक लॉगिन बॉक्स जो आपका पासवर्ड अनजान लोगों को भेजता है।",
+        "seems_en": "What it pretends to be: A normal sign-in page.",
+        "seems_hi": "यह क्या दिखता है: एक सामान्य लॉगिन पेज।",
+        "affects_en": "What could happen to you: They can steal your password when you sign in.",
+        "affects_hi": "आप पर क्या असर होगा: लॉगिन करते ही आपका पासवर्ड चोरी हो सकता है।",
+        "explain_en": "This login box sends your password to a different website.",
+        "explain_hi": "यह लॉगिन बॉक्स आपका पासवर्ड किसी दूसरी वेबसाइट पर भेजता है।",
+        "action_en": "Do not type your password on this page.",
+        "action_hi": "इस पेज पर अपना पासवर्ड बिल्कुल न लिखें।",
+    },
+    "unsafe_http_login_form": {
+        "name_en": "Unsafe Login Box Without Lock",
+        "slice_key": "unsafe_connection",
+        "group": "malicious",
+        "about_en": "What this is: A login box on an unsafe connection.",
+        "about_hi": "यह क्या है: बिना सुरक्षा लॉक वाला एक लॉगिन बॉक्स।",
+        "seems_en": "What it pretends to be: A safe place to sign in.",
+        "seems_hi": "यह क्या दिखता है: लॉगिन करने की एक सुरक्षित जगह।",
+        "affects_en": "What could happen to you: Others can see the password you type here.",
+        "affects_hi": "आप पर क्या असर होगा: यहाँ लिखा गया पासवर्ड दूसरे लोग देख सकते हैं।",
+        "explain_en": "This login form sends your password without safety protection.",
+        "explain_hi": "यह फॉर्म बिना किसी सुरक्षा के आपका पासवर्ड भेजता है।",
+        "action_en": "Close this page without signing in.",
+        "action_hi": "बिना लॉगिन किए इस पेज को बंद कर दें।",
+    },
+    "password_box_on_fake_site": {
+        "name_en": "Password Box on Untrusted Site",
+        "slice_key": "asks_for_otp",
+        "group": "malicious",
+        "about_en": "What this is: A fake website asking for your password or OTP.",
+        "about_hi": "यह क्या है: पासवर्ड या OTP मांगने वाली एक नकली वेबसाइट।",
+        "seems_en": "What it pretends to be: A real login page you know.",
+        "seems_hi": "यह क्या दिखता है: आपकी जानी-पहचानी असली लॉगिन वेबसाइट।",
+        "affects_en": "What could happen to you: Typing your password gives them your account.",
+        "affects_hi": "आप पर क्या असर होगा: पासवर्ड लिखने से आपका खाता उनके हाथ लग जाएगा।",
+        "explain_en": "It looks like a login page, but it steals passwords.",
+        "explain_hi": "यह लॉगिन पेज जैसा दिखता है, पर पासवर्ड चुराने के लिए बना है।",
+        "action_en": "Do not enter your password or OTP here.",
+        "action_hi": "यहाँ अपना पासवर्ड या OTP बिल्कुल न डालें।",
+    },
+    "hidden_box_or_layer": {
+        "name_en": "Hidden Trap Over Buttons",
+        "slice_key": "hidden_button_trap",
+        "group": "malicious",
+        "about_en": "What this is: A page with an invisible layer over buttons.",
+        "about_hi": "यह क्या है: बटनों के ऊपर छुपी हुई परत वाला एक पेज।",
+        "seems_en": "What it pretends to be: A normal button or video player.",
+        "seems_hi": "यह क्या दिखता है: एक सामान्य बटन या वीडियो प्लेयर।",
+        "affects_en": "What could happen to you: Clicking a button clicks a hidden trap instead.",
+        "affects_hi": "आप पर क्या असर होगा: बटन दबाने पर अनजाने में कुछ गलत क्लिक हो सकता है।",
+        "explain_en": "An invisible box is hiding on top of the buttons.",
+        "explain_hi": "बटनों के ऊपर एक न दिखने वाला जाल छुपा हुआ है।",
+        "action_en": "Close this tab and do not click anything.",
+        "action_hi": "इस टैब को बंद कर दें और कहीं क्लिक न करें।",
+    },
+    "fake_link_text": {
+        "name_en": "Link Going to Wrong Place",
+        "slice_key": "fake_link_text",
+        "group": "malicious",
+        "about_en": "What this is: A link that lies about where it goes.",
+        "about_hi": "यह क्या है: एक लिंक जो दिखता कुछ है और ले कहीं और जाता है।",
+        "seems_en": "What it pretends to be: A link to a trusted company.",
+        "seems_hi": "यह क्या दिखता है: किसी भरोसेमंद कंपनी का असली लिंक।",
+        "affects_en": "What could happen to you: Clicking it takes you to a fake website.",
+        "affects_hi": "आप पर क्या असर होगा: इस पर क्लिक करने से आप नकली वेबसाइट पर पहुंच जाएंगे।",
+        "explain_en": "The link text says one website name but opens another.",
+        "explain_hi": "लिंक पर नाम किसी और वेबसाइट का लिखा है पर खुलता कुछ और है।",
+        "action_en": "Do not click links on this page.",
+        "action_hi": "इस पेज के किसी भी लिंक पर क्लिक न करें।",
+    },
+    "hidden_page_code_or_download": {
+        "name_en": "Sneaky File Download or Code",
+        "slice_key": "sneaky_download",
+        "group": "malicious",
+        "about_en": "What this is: A page trying to download files by itself.",
+        "about_hi": "यह क्या है: अपने आप फाइल डाउनलोड करने की कोशिश करता एक पेज।",
+        "seems_en": "What it pretends to be: A normal download or update page.",
+        "seems_hi": "यह क्या दिखता है: एक सामान्य डाउनलोड या अपडेट पेज।",
+        "affects_en": "What could happen to you: It can put harmful files on your computer.",
+        "affects_hi": "आप पर क्या असर होगा: यह आपके कंप्यूटर में खतरनाक फाइल डाल सकता है।",
+        "explain_en": "This page tried to start a download without you clicking.",
+        "explain_hi": "इस पेज ने आपके क्लिक किए बिना फाइल डाउनलोड करने की कोशिश की।",
+        "action_en": "Delete any file this page downloaded.",
+        "action_hi": "अगर कोई फाइल डाउनलोड हुई है तो उसे तुरंत डिलीट करें।",
+    },
+    "copy_or_close_trap": {
+        "name_en": "Page Blocking Copy or Close",
+        "slice_key": "copy_or_close_block",
+        "group": "dark_pattern",
+        "about_en": "What this is: A page that messes with your mouse or copying.",
+        "about_hi": "यह क्या है: आपके माउस या कॉपी करने के काम को रोकने वाला पेज।",
+        "seems_en": "What it pretends to be: A normal article or offer page.",
+        "seems_hi": "यह क्या दिखता है: एक सामान्य जानकारी या ऑफर वाला पेज।",
+        "affects_en": "What could happen to you: It can change what you copy or stop you leaving.",
+        "affects_hi": "आप पर क्या असर होगा: यह आपके कॉपी किए गए टेक्स्ट को बदल सकता है।",
+        "explain_en": "This page changes what you copy or blocks right-click.",
+        "explain_hi": "यह पेज कॉपी किए टेक्स्ट को बदलता है या राइट-क्लिक रोकता है।",
+        "action_en": "Close this browser tab now.",
+        "action_hi": "इस ब्राउज़र टैब को अभी बंद कर दें।",
+    },
+    "unasked_popup_request": {
+        "name_en": "Unasked Permission Popup",
+        "slice_key": "unasked_popup",
+        "group": "malicious",
+        "about_en": "What this is: A page asking for camera, location, or alerts right away.",
+        "about_hi": "यह क्या है: खुलते ही कैमरा, लोकेशन या अलर्ट मांगने वाला पेज।",
+        "seems_en": "What it pretends to be: A normal website check.",
+        "seems_hi": "यह क्या दिखता है: वेबसाइट की एक सामान्य जांच।",
+        "affects_en": "What could happen to you: Allowing it lets them spam or track you.",
+        "affects_hi": "आप पर क्या असर होगा: अनुमति देने से वे आपको नकली अलर्ट भेज सकते हैं।",
+        "explain_en": "It asked for browser permissions without you clicking anything.",
+        "explain_hi": "इसने आपके क्लिक किए बिना ही फोन या कंप्यूटर की अनुमति मांगी।",
+        "action_en": "Click Block on the permission popup.",
+        "action_hi": "अनुमति मांगने वाले बॉक्स पर Block दबाएं।",
+    },
+    "ClickFix": {
+        "name_en": "Fake Computer Fix Command Trick",
+        "slice_key": "clickfix_keys",
+        "group": "malicious",
+        "about_en": "What this is: A fake check asking you to press keys on your keyboard.",
+        "about_hi": "यह क्या है: कीबोर्ड पर बटन दबाने के लिए कहने वाला एक खतरनाक धोखा।",
+        "seems_en": "What it pretends to be: A human check or computer fix step.",
+        "seems_hi": "यह क्या दिखता है: इंसान होने की जांच या कंप्यूटर ठीक करने का तरीका।",
+        "affects_en": "What could happen to you: Pressing those keys installs bad software on your PC.",
+        "affects_hi": "आप पर क्या असर होगा: ये बटन दबाने से आपके कंप्यूटर में वायरस आ सकता है।",
+        "explain_en": "Real websites never ask you to press Win+R and paste text.",
+        "explain_hi": "असली वेबसाइट कभी भी Win+R दबाकर कुछ पेस्ट करने को नहीं कहती।",
+        "action_en": "Do not press Win+R or paste anything.",
+        "action_hi": "कीबोर्ड पर Win+R बिल्कुल न दबाएं और कुछ पेस्ट न करें।",
+    },
+    "fake_virus_scare": {
+        "name_en": "Fake Virus Alert Popup",
+        "slice_key": "fake_virus_alert",
+        "group": "malicious",
+        "about_en": "What this is: A fake warning saying your computer has a virus.",
+        "about_hi": "यह क्या है: कंप्यूटर में वायरस होने का डर दिखाने वाली नकली चेतावनी।",
+        "seems_en": "What it pretends to be: A real Windows security alert with a phone number.",
+        "seems_hi": "यह क्या दिखता है: कंप्यूटर की असली सुरक्षा चेतावनी और हेल्पलाइन नंबर।",
+        "affects_en": "What could happen to you: Calling that number lets scammers into your computer.",
+        "affects_hi": "आप पर क्या असर होगा: उस नंबर पर कॉल करने से ठग आपका कंप्यूटर कंट्रोल कर लेंगे।",
+        "explain_en": "Webpages cannot scan your computer for viruses. This alert is fake.",
+        "explain_hi": "कोई भी वेबसाइट आपके कंप्यूटर में वायरस नहीं ढूंढ सकती। यह झूठ है।",
+        "action_en": "Do not call the phone number on the screen.",
+        "action_hi": "स्क्रीन पर लिखे फोन नंबर पर बिल्कुल कॉल न करें।",
+    },
+    "fake_timer": {
+        "name_en": "Fake Countdown Clock",
+        "slice_key": "fake_countdown",
+        "group": "dark_pattern",
+        "about_en": "What this is: A shopping or offer page with a fake timer.",
+        "about_hi": "यह क्या है: नकली घड़ी दिखाकर जल्दी कराने वाला एक पेज।",
+        "seems_en": "What it pretends to be: A deal that is about to end right now.",
+        "seems_hi": "यह क्या दिखता है: अभी तुरंत खत्म होने वाला एक खास ऑफर।",
+        "affects_en": "What could happen to you: It rushes you into buying without thinking.",
+        "affects_hi": "आप पर क्या असर होगा: यह आपको बिना सोचे-समझे पैसे खर्च करने की जल्दी कराता है।",
+        "explain_en": "The countdown clock starts over when you reload the page.",
+        "explain_hi": "पेज दोबारा लोड करने पर यह घड़ी फिर से शुरू हो जाती है।",
+        "action_en": "Ignore the clock and take your time.",
+        "action_hi": "घड़ी पर ध्यान न दें और आराम से सोचकर फैसला लें।",
+    },
+    "pre_ticked_box": {
+        "name_en": "Pre-Ticked Extra Cost Box",
+        "slice_key": "pre_ticked_addon",
+        "group": "dark_pattern",
+        "about_en": "What this is: A page with extra boxes already ticked for you.",
+        "about_hi": "यह क्या है: पहले से टिक किए गए एक्स्ट्रा चार्ज के बॉक्स वाला पेज।",
+        "seems_en": "What it pretends to be: A normal checkout or signup form.",
+        "seems_hi": "यह क्या दिखता है: एक सामान्य पेमेंट या साइन-अप फॉर्म।",
+        "affects_en": "What could happen to you: You might pay extra monthly fees by mistake.",
+        "affects_hi": "आप पर क्या असर होगा: गलती से आपके एक्स्ट्रा पैसे कट सकते हैं।",
+        "explain_en": "They ticked an extra paid option for you without asking.",
+        "explain_hi": "उन्होंने आपसे पूछे बिना पैसे वाले बॉक्स पर पहले से टिक लगा दिया है।",
+        "action_en": "Untick any extra boxes before you pay.",
+        "action_hi": "पेमेंट करने से पहले सभी फालतू बॉक्स से टिक हटा दें।",
+    },
+    "guilt_button": {
+        "name_en": "Guilt-Trip No Button",
+        "slice_key": "guilt_no_button",
+        "group": "dark_pattern",
+        "about_en": "What this is: A page that uses rude words on the No button.",
+        "about_hi": "यह क्या है: मना करने वाले बटन पर अजीब बातें लिखने वाला पेज।",
+        "seems_en": "What it pretends to be: A helpful discount or safety offer.",
+        "seems_hi": "यह क्या दिखता है: आपकी बचत या सुरक्षा का एक ऑफर।",
+        "affects_en": "What could happen to you: It tries to make you feel bad for saying no.",
+        "affects_hi": "आप पर क्या असर होगा: यह आपको 'ना' कहने पर बुरा महसूस कराने की चाल है।",
+        "explain_en": "The decline button uses guilt to push you into clicking yes.",
+        "explain_hi": "मना करने वाला बटन आपको शर्मिंदा करके 'हाँ' दबाने के लिए उकसाता है।",
+        "action_en": "Feel free to click the no button anyway.",
+        "action_hi": "बिना झिझक मना करने वाले बटन को दबाएं।",
+    },
+    "unfair_buttons": {
+        "name_en": "Giant Accept Button Trick",
+        "slice_key": "unfair_choice_buttons",
+        "group": "dark_pattern",
+        "about_en": "What this is: A popup where Accept is huge and Reject is tiny.",
+        "about_hi": "यह क्या है: एक बॉक्स जहाँ Accept बटन बहुत बड़ा और Reject छुपा हुआ है।",
+        "seems_en": "What it pretends to be: A normal cookie or terms choice.",
+        "seems_hi": "यह क्या दिखता है: एक सामान्य सहमति मांगने वाला बॉक्स।",
+        "affects_en": "What could happen to you: It tricks you into sharing your browsing data.",
+        "affects_hi": "आप पर क्या असर होगा: यह आपको अनजाने में अपनी जानकारी देने के लिए फंसाता है।",
+        "explain_en": "They hid the reject button so you only see accept.",
+        "explain_hi": "उन्होंने मना करने वाले बटन को छुपा दिया है ताकि आप सिर्फ हाँ दबाएं।",
+        "action_en": "Look closely for the small reject or manage button.",
+        "action_hi": "छोटे अक्षरों में लिखे Reject बटन को ढूंढकर दबाएं।",
+    },
+}
+
+RAW_SIGNAL_TO_TEMPLATE_KEY: dict[str, str] = {
+    "cross_domain_password_form": "cross_site_login_form",
+    "insecure_http_form": "unsafe_http_login_form",
+    "password_or_otp_input": "password_box_on_fake_site",
+    "hidden_or_cross_iframe": "hidden_box_or_layer",
+    "clickjack_overlay": "hidden_box_or_layer",
+    "deceptive_anchor_mismatch": "fake_link_text",
+    "suspicious_inline_script": "hidden_page_code_or_download",
+    "document_write_script": "hidden_page_code_or_download",
+    "auto_download_trigger": "hidden_page_code_or_download",
+    "clipboard_hijack_hook": "copy_or_close_trap",
+    "contextmenu_or_unload_trap": "copy_or_close_trap",
+    "unprompted_permission_request": "unasked_popup_request",
+    "clickfix_command_trap": "ClickFix",
+    "fake_system_dialog": "fake_virus_scare",
+    "fake_support_urgency": "fake_virus_scare",
+    "resetting_countdown_timer": "fake_timer",
+    "fake_urgency_scarcity": "fake_timer",
+    "prechecked_addon_box": "pre_ticked_box",
+    "forced_continuity_wording": "pre_ticked_box",
+    "hidden_drip_pricing": "pre_ticked_box",
+    "confirm_shaming": "guilt_button",
+    "asymmetric_choice_ui": "unfair_buttons",
+    "disguised_ad_button": "unfair_buttons",
+    "misdirection_close_button": "fake_link_text",
+    "nagging_modal": "unfair_buttons",
+    "sneak_into_basket": "pre_ticked_box",
 }
 
 
 def strip_url_query_and_fragment(raw_url: str) -> str:
-    """Strips query strings and fragments from URLs to enforce privacy."""
     try:
         p = urlparse(raw_url.strip())
         scheme = p.scheme if p.scheme in ("http", "https") else "https"
@@ -117,7 +316,7 @@ def strip_url_query_and_fragment(raw_url: str) -> str:
 
 
 def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Deterministically scores a webpage's structural signals, domain, title, and text sample."""
+    """Scores webpage signals and builds a real score_breakdown list matching combined score."""
     memory = memory or {}
     weights = memory.get("weights", {})
     user_allowlist = [str(d).lower().strip() for d in memory.get("user_allowlist", []) if d]
@@ -148,9 +347,10 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
     hard_floor = 0
 
     indicators: list[dict[str, str]] = []
+    raw_slices: list[dict[str, Any]] = []
     dark_pattern_names: list[str] = []
+    matched_template_keys: list[str] = []
 
-    # Check domain-level real risk factors
     is_ip_literal = False
     try:
         ip_obj = ipaddress.ip_address(host)
@@ -162,23 +362,23 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
     impersonation_info = detect_brand_impersonation(host, extra_allowlist=user_allowlist) if not is_allowlisted else None
     has_urgency_threat = has_explicit_urgency_or_threat(combined_text_low)
 
-    # Check if page title claims a protected brand on an unrelated domain
     claimed_brand_in_title = None
     if not is_allowlisted and clean_title:
         t_low = clean_title.lower()
         for brand, official_doms in PROTECTED_BRANDS.items():
             if len(brand) >= 4 and brand in t_low:
-                claimed_brand_in_title = (brand.upper(), official_doms[0])
+                claimed_brand_in_title = (brand, official_doms[0])
                 break
 
     if blacklisted:
         malicious_score = max(malicious_score, 80)
         hard_signals_count += 1
         hard_floor = max(hard_floor, 80)
+        raw_slices.append({"key": "known_scam_link", "points": 80, "severity": "High"})
         indicators.append({
-            "type": "Blacklisted Threat Domain",
+            "type": "Known Scam Link",
             "target": host,
-            "explanation": f"Domain '{host}' is listed on the local threat blacklist (floor score 80).",
+            "explanation": PLAIN_SIGNAL_TEMPLATES["known_bad_link"]["explain_en"],
             "severity": "High",
         })
 
@@ -187,6 +387,7 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
         malicious_score = max(malicious_score, boost)
         hard_signals_count += 1
         hard_floor = max(hard_floor, boost)
+        raw_slices.append({"key": "fake_website_name", "points": boost, "severity": "High"})
         indicators.append({
             "type": impersonation_info["technique"],
             "target": host,
@@ -196,46 +397,50 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
 
     if not is_allowlisted:
         if is_suspicious_tld:
-            malicious_score += int(weights.get("unverified_tld_penalty", 40))
+            tld_pen = int(weights.get("unverified_tld_penalty", 40))
+            malicious_score += tld_pen
             medium_signals_count += 1
+            raw_slices.append({"key": "strange_link_ending", "points": tld_pen, "severity": "Medium"})
             indicators.append({
-                "type": "Suspicious TLD",
+                "type": "Strange Link Ending",
                 "target": host,
-                "explanation": f"Domain '{host}' uses a high-risk top-level domain.",
+                "explanation": PLAIN_SIGNAL_TEMPLATES["strange_link_ending"]["explain_en"],
                 "severity": "Medium",
             })
         if is_ip_literal:
             malicious_score = max(malicious_score, 75)
             hard_signals_count += 1
             hard_floor = max(hard_floor, 75)
+            raw_slices.append({"key": "number_only_link", "points": 75, "severity": "High"})
             indicators.append({
-                "type": "IP-Literal Host",
+                "type": "Number-Only Address",
                 "target": host,
-                "explanation": "Webpage is hosted on a raw IP address rather than a registered domain name.",
+                "explanation": "This page uses numbers instead of a real company name.",
                 "severity": "High",
             })
         subdomain, _, _ = split_domain_parts(host)
         if len([p for p in subdomain.split(".") if p]) >= 3:
             malicious_score += 25
             medium_signals_count += 1
+            raw_slices.append({"key": "confusing_long_link", "points": 25, "severity": "Medium"})
             indicators.append({
-                "type": "Excessive Subdomains",
+                "type": "Long Confusing Address",
                 "target": host,
-                "explanation": "Hostname chains 3 or more subdomains.",
+                "explanation": "This address stacks extra words to hide the real website name.",
                 "severity": "Medium",
             })
         if has_mixed_scripts(host) or "xn--" in host:
             malicious_score = max(malicious_score, 85)
             hard_signals_count += 1
             hard_floor = max(hard_floor, 85)
+            raw_slices.append({"key": "mixed_foreign_letters", "points": 85, "severity": "High"})
             indicators.append({
-                "type": "IDN / Mixed-Script Hostname",
+                "type": "Look-Alike Foreign Letters",
                 "target": host,
-                "explanation": "Hostname mixes character scripts or uses punycode ('xn--').",
+                "explanation": "This address mixes foreign letters to trick your eyes.",
                 "severity": "High",
             })
 
-    # Inspect structural signals sent by content.js
     signal_ids = {s.id.strip().lower() for s in req.signals}
     has_cross_domain_or_http_form = bool(signal_ids & {"cross_domain_password_form", "insecure_http_form"})
     has_domain_or_form_threat = bool(
@@ -250,18 +455,24 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
 
     for sig in req.signals:
         sid = sig.id.strip().lower()
-        human_label, group = SIGNAL_HUMAN_NAMES.get(sid, (sig.id.replace("_", " ").title(), "malicious"))
-        ev = sig.evidence or f"Detected {sig.count} instance(s)"
+        tpl_key = RAW_SIGNAL_TO_TEMPLATE_KEY.get(sid, "cross_site_login_form")
+        tpl = PAGE_SIGNAL_TEMPLATES[tpl_key]
+        human_label = tpl["name_en"]
+        slice_key = tpl["slice_key"]
+        group = tpl["group"]
+        ev = sig.evidence or f"Found {sig.count} time(s)"
 
         if sid == "cross_domain_password_form":
             pen = int(weights.get("cross_domain_form_penalty", 75))
             malicious_score = max(malicious_score + 35, pen + 15)
             hard_signals_count += 1
             hard_floor = max(hard_floor, 90)
+            matched_template_keys.append(tpl_key)
+            raw_slices.append({"key": slice_key, "points": max(pen, 75), "severity": "High"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Password/credential form submits to a different registered domain.",
+                "explanation": tpl["explain_en"],
                 "severity": "High",
             })
         elif sid == "insecure_http_form":
@@ -269,15 +480,15 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
             malicious_score = max(malicious_score + pen, 72)
             hard_signals_count += 1
             hard_floor = max(hard_floor, 72)
+            matched_template_keys.append(tpl_key)
+            raw_slices.append({"key": slice_key, "points": max(pen, 45), "severity": "High"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Sensitive credential form submits over unencrypted HTTP.",
+                "explanation": tpl["explain_en"],
                 "severity": "High",
             })
         elif sid == "password_or_otp_input":
-            # BUG 2 Rule 1: Presence of a password/OTP input is NOT a risk indicator by itself!
-            # Only score it when combined with a real domain/form/urgency signal.
             if has_domain_or_form_threat and not is_allowlisted:
                 malicious_score = max(malicious_score + 20, 75 if (impersonation_info or blacklisted or claimed_brand_in_title) else 50)
                 if impersonation_info or blacklisted or claimed_brand_in_title:
@@ -285,19 +496,23 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
                     hard_floor = max(hard_floor, 92)
                 else:
                     medium_signals_count += 1
+                matched_template_keys.append(tpl_key)
+                raw_slices.append({"key": slice_key, "points": 25, "severity": "High" if hard_floor >= 66 else "Medium"})
                 indicators.append({
-                    "type": "Credential Input Combined With Risk Signal",
+                    "type": human_label,
                     "target": ev,
-                    "explanation": "Password or OTP input field is present alongside a domain, form, or urgency risk factor.",
+                    "explanation": tpl["explain_en"],
                     "severity": "High" if hard_floor >= 66 else "Medium",
                 })
         elif sid == "hidden_or_cross_iframe":
             malicious_score += 25
             medium_signals_count += 1
+            matched_template_keys.append(tpl_key)
+            raw_slices.append({"key": slice_key, "points": 25, "severity": "Medium"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Page embeds a hidden cross-origin iframe.",
+                "explanation": tpl["explain_en"],
                 "severity": "Medium",
             })
         elif sid == "clickjack_overlay":
@@ -306,10 +521,12 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
             medium_signals_count += 1
             if "hidden_or_cross_iframe" in signal_ids or not is_allowlisted:
                 hard_floor = max(hard_floor, 55)
+            matched_template_keys.append(tpl_key)
+            raw_slices.append({"key": slice_key, "points": pen, "severity": "High" if malicious_score >= 66 else "Medium"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Transparent overlay is positioned over interactive buttons or links.",
+                "explanation": tpl["explain_en"],
                 "severity": "High" if malicious_score >= 66 else "Medium",
             })
         elif sid == "deceptive_anchor_mismatch":
@@ -317,30 +534,36 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
             malicious_score = max(malicious_score + pen, 68)
             hard_signals_count += 1
             hard_floor = max(hard_floor, 68)
+            matched_template_keys.append(tpl_key)
+            raw_slices.append({"key": slice_key, "points": max(pen, 45), "severity": "High"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Anchor visible text displays a domain name that does not match its href destination.",
+                "explanation": tpl["explain_en"],
                 "severity": "High",
             })
         elif sid in ("suspicious_inline_script", "document_write_script"):
             pen = int(weights.get("suspicious_script_penalty", 35))
             malicious_score += pen
             medium_signals_count += 1
+            matched_template_keys.append(tpl_key)
+            raw_slices.append({"key": slice_key, "points": pen, "severity": "Medium"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Inline scripts use dynamic code evaluation or script injection.",
+                "explanation": tpl["explain_en"],
                 "severity": "Medium",
             })
         elif sid == "auto_download_trigger":
             malicious_score = max(malicious_score + 55, 80)
             hard_signals_count += 1
             hard_floor = max(hard_floor, 80)
+            matched_template_keys.append(tpl_key)
+            raw_slices.append({"key": slice_key, "points": 80, "severity": "High"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Page attempted an automatic download without a user gesture.",
+                "explanation": tpl["explain_en"],
                 "severity": "High",
             })
         elif sid in ("clipboard_hijack_hook", "contextmenu_or_unload_trap"):
@@ -348,20 +571,24 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
             dark_pattern_score += 25
             medium_signals_count += 1
             dark_pattern_names.append(human_label)
+            matched_template_keys.append(tpl_key)
+            raw_slices.append({"key": slice_key, "points": 30, "severity": "Medium"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Page hooks clipboard copy events, blocks right-click, or traps tab closing.",
+                "explanation": tpl["explain_en"],
                 "severity": "Medium",
             })
         elif sid == "unprompted_permission_request":
             pen = int(weights.get("unprompted_permission_penalty", 40))
             malicious_score += pen
             medium_signals_count += 1
+            matched_template_keys.append(tpl_key)
+            raw_slices.append({"key": slice_key, "points": pen, "severity": "Medium"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Page requested browser permissions without a user gesture.",
+                "explanation": tpl["explain_en"],
                 "severity": "Medium",
             })
         elif sid == "clickfix_command_trap":
@@ -369,10 +596,12 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
             malicious_score = max(malicious_score, pen)
             hard_signals_count += 1
             hard_floor = max(hard_floor, 95)
+            matched_template_keys.insert(0, tpl_key)
+            raw_slices.append({"key": slice_key, "points": pen, "severity": "High"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "ClickFix pattern instructing user to press Win+R and paste a command.",
+                "explanation": tpl["explain_en"],
                 "severity": "High",
             })
         elif sid in ("fake_system_dialog", "fake_support_urgency"):
@@ -380,34 +609,39 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
             malicious_score = max(malicious_score, pen)
             hard_signals_count += 1
             hard_floor = max(hard_floor, 85)
+            matched_template_keys.insert(0, tpl_key)
+            raw_slices.append({"key": slice_key, "points": pen, "severity": "High"})
             indicators.append({
                 "type": human_label,
                 "target": ev,
-                "explanation": "Displays a fake virus/system dialog or urgent tech-support phone number.",
+                "explanation": tpl["explain_en"],
                 "severity": "High",
             })
         elif group == "dark_pattern":
             dark_pattern_names.append(human_label)
             medium_signals_count += 1
+            matched_template_keys.append(tpl_key)
             if sid == "resetting_countdown_timer":
-                dark_pattern_score += int(weights.get("dark_pattern_timer_penalty", 35)) + 10
+                pts = int(weights.get("dark_pattern_timer_penalty", 35)) + 10
             elif sid == "fake_urgency_scarcity":
-                dark_pattern_score += int(weights.get("dark_pattern_timer_penalty", 35))
+                pts = int(weights.get("dark_pattern_timer_penalty", 35))
             elif sid in ("prechecked_addon_box", "forced_continuity_wording", "hidden_drip_pricing"):
-                dark_pattern_score += int(weights.get("dark_pattern_prechecked_penalty", 25)) + 10
+                pts = int(weights.get("dark_pattern_prechecked_penalty", 25)) + 10
             elif sid == "confirm_shaming":
-                dark_pattern_score += int(weights.get("dark_pattern_shaming_penalty", 25)) + 10
+                pts = int(weights.get("dark_pattern_shaming_penalty", 25)) + 10
             elif sid in ("asymmetric_choice_ui", "disguised_ad_button", "misdirection_close_button", "nagging_modal"):
-                dark_pattern_score += int(weights.get("dark_pattern_asymmetric_penalty", 25)) + 10
+                pts = int(weights.get("dark_pattern_asymmetric_penalty", 25)) + 10
             elif sid == "sneak_into_basket":
-                dark_pattern_score += int(weights.get("dark_pattern_sneak_penalty", 35)) + 10
+                pts = int(weights.get("dark_pattern_sneak_penalty", 35)) + 10
             else:
-                dark_pattern_score += 25
+                pts = 25
+            dark_pattern_score += pts
+            raw_slices.append({"key": slice_key, "points": pts, "severity": "High" if dark_pattern_score >= 66 else "Medium"})
 
             indicators.append({
-                "type": f"Dark Pattern: {human_label}",
+                "type": f"Trick: {human_label}",
                 "target": ev,
-                "explanation": f"Detected {human_label} on page.",
+                "explanation": tpl["explain_en"],
                 "severity": "High" if dark_pattern_score >= 66 else "Medium",
             })
 
@@ -417,14 +651,15 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
             malicious_score = max(malicious_score, 92)
             hard_signals_count += 1
             hard_floor = max(hard_floor, 92)
+            matched_template_keys.insert(0, "password_box_on_fake_site")
+            raw_slices.append({"key": "fake_website_name", "points": 65, "severity": "High"})
             indicators.append({
-                "type": "Brand Title Claim + Credential Form Mismatch",
-                "target": f"Title claims '{b_name}' on '{host}'",
-                "explanation": f"Page title claims to be {b_name} ({b_official}) alongside credential inputs on an unverified domain.",
+                "type": "Fake Brand Login Page",
+                "target": f"Title says {b_name} on {host}",
+                "explanation": f"The page says {b_name} but the website address is {host}, not {b_official}.",
                 "severity": "High",
             })
 
-    # BUG 2 Rule 1 & Rule 2: Handle zero-signal pages & weak text evidence
     has_weak_login_text = any(
         w in combined_text_low for w in ("enter your password", "forgot password", "verify your account")
     )
@@ -435,36 +670,36 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
 
     if len(req.signals) == 0 and hard_signals_count == 0 and medium_signals_count == 0:
         if is_allowlisted or is_routine_student_or_org_portal:
-            # e.g. github.com/login or portal.mycollege.ac.in/login with 'Student Login, enter roll number and password' -> Low (0-20)
             malicious_score = 0
             dark_pattern_score = 0
             needs_ai = False
+            raw_slices = []
         elif has_urgency_threat:
-            # Zero DOM signals, but explicit threat text on an unknown domain -> capped at Medium (45) and requires AI confirmation
             malicious_score = 45
             medium_signals_count = 1
             needs_ai = True
+            raw_slices.append({"key": "vague_click_bait", "points": 45, "severity": "Medium"})
             indicators.append({
-                "type": "Urgent Account Threat Text on Unverified Domain",
+                "type": "Rushed Account Warning",
                 "target": clean_sample[:80],
-                "explanation": "Page text contains urgent account restriction/verification wording on an unverified domain.",
+                "explanation": "This page uses scary words to rush you on an unknown website.",
                 "severity": "Medium",
             })
         elif has_weak_login_text:
-            # e.g. fake-bank.example/login with 'Enter your password', zero signals -> Medium at most (max 45), needs_ai=True
             malicious_score = 35
             needs_ai = True
+            raw_slices.append({"key": "asks_for_otp", "points": 35, "severity": "Medium"})
             indicators.append({
-                "type": "Unverified Domain Login Prompt (Pending AI Confirmation)",
-                "target": f"{host} — '{clean_sample[:60]}'",
-                "explanation": "Unverified domain prompts for a password with zero structural signals; capped at Medium pending AI review.",
+                "type": "Login Prompt on Unknown Website",
+                "target": host,
+                "explanation": "This unknown website asks for a password. Check the address carefully.",
                 "severity": "Medium",
             })
         else:
-            # Unknown domain with zero signals and benign text -> Low (0-20)
             malicious_score = 0
             dark_pattern_score = 0
             needs_ai = False
+            raw_slices = []
     else:
         needs_ai = False
 
@@ -476,19 +711,16 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
         combined = min(100, combined + int(min(malicious_score, dark_pattern_score) * 0.25))
     combined = max(combined, hard_floor)
 
-    # BUG 2 Rule 5: Popular allow-listed domains (and user_allowlist) are capped at 20 unless a hard signal fires
     if is_allowlisted and hard_signals_count == 0:
-        combined = min(combined, 20)
-        malicious_score = min(malicious_score, 20)
-        dark_pattern_score = min(dark_pattern_score, 20)
+        combined = 0 if len(req.signals) == 0 else min(combined, 20)
+        malicious_score = min(malicious_score, combined)
+        dark_pattern_score = min(dark_pattern_score, combined)
 
-    # BUG 2 Rule 3: High (66+) requires at least one hard signal OR at least two independent medium signals
     if combined >= 66 and hard_signals_count == 0 and medium_signals_count < 2:
         combined = 60
         malicious_score = min(malicious_score, 60)
         dark_pattern_score = min(dark_pattern_score, 60)
 
-    # BUG 2 Rule 2: Zero signals plus weak text evidence only may reach at most Medium (max 45)
     if len(req.signals) == 0 and hard_signals_count == 0 and medium_signals_count <= 1:
         combined = min(combined, 45)
         malicious_score = min(malicious_score, 45)
@@ -499,53 +731,89 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
     if not needs_ai and not is_allowlisted:
         needs_ai = (25 <= combined <= 75) or (hard_signals_count > 0)
 
-    # BUG 2 Rule 4 & BUG 3 Rule 5: Explanations and recommended actions must ONLY describe actually detected signals!
-    detected_types = [i["type"] for i in indicators]
-    detected_summary = ", ".join(detected_types[:4]) if detected_types else "None"
+    verdict_en = default_verdict_line(level, "en")
+    verdict_hi = default_verdict_line(level, "hi")
     dp_summary = ", ".join(dict.fromkeys(dark_pattern_names)) if dark_pattern_names else "None"
-
-    about_en = f"Webpage '{clean_url}' (host '{host}') analyzed with {len(req.signals)} structural signal(s)."
-    about_hi = f"वेबपेज '{clean_url}' (होस्ट '{host}') का {len(req.signals)} संरचनात्मक संकेतों के साथ विश्लेषण किया गया।"
+    breakdown = build_normalized_score_breakdown(raw_slices, combined)
 
     if not is_suspicious:
-        cat = "Verified Clean Webpage"
-        calm_en = f"✅ '{host}' shows no suspicious phishing or dark-pattern signals."
-        calm_hi = f"✅ '{host}' पर कोई संदिग्ध फ़िशिंग या डार्क पैटर्न संकेत नहीं मिला।"
-        seems_en = f"Standard webpage ('{clean_title or host}') with no high-risk indicators."
-        seems_hi = f"सामान्य वेबपेज ('{clean_title or host}') जिस पर कोई जोखिम संकेत नहीं है।"
-        affects_en = "No malicious form actions, overlays, or manipulative dark patterns were detected."
-        affects_hi = "कोई दुर्भावनापूर्ण फॉर्म या डार्क पैटर्न नहीं मिला।"
-        actions_en = ["No risky signals detected on this page."]
-        actions_hi = ["इस पेज पर कोई जोखिम भरा संकेत नहीं मिला।"]
-    else:
-        if dark_pattern_score > malicious_score and dark_pattern_names:
-            cat = f"Dark Patterns Detected ({dp_summary[:60]})"
-        elif impersonation_info:
-            cat = f"{impersonation_info['technique']} ({impersonation_info['brand']})"
-        elif blacklisted:
-            cat = f"Blacklisted Domain ({host})"
-        else:
-            cat = f"Suspicious Webpage ({detected_types[0] if detected_types else host})"
-
-        calm_en = f"⚠️ Caution on '{host}': Detected {detected_summary}."
-        calm_hi = f"⚠️ '{host}' पर सावधानी बरतें: {detected_summary} का पता चला।"
-        seems_en = f"Page '{clean_title or host}' triggered the following specific check(s): {detected_summary}."
-        seems_hi = f"पेज '{clean_title or host}' पर निम्नलिखित संकेत मिले: {detected_summary}।"
-        affects_en = (
-            "Based on the detected indicator(s) ("
-            + detected_summary
-            + "), interacting with untrusted forms or prompts on this page may expose your data or choices."
-        )
-        affects_hi = f"मिले संकेतों ({detected_summary}) के आधार पर, इस पेज पर संवेदनशील जानकारी साझा करने से जोखिम हो सकता है।"
+        safe_tpl = PLAIN_SIGNAL_TEMPLATES["safe_general"]
+        cat = "Safe Webpage"
+        calm_en = safe_tpl["calm_en"]
+        calm_hi = safe_tpl["calm_hi"]
+        about_en = safe_tpl["about_en"]
+        about_hi = safe_tpl["about_hi"]
+        seems_en = safe_tpl["seems_en"]
+        seems_hi = safe_tpl["seems_hi"]
+        affects_en = safe_tpl["affects_en"]
+        affects_hi = safe_tpl["affects_hi"]
+        actions_en = list(safe_tpl["actions_en"])
+        actions_hi = list(safe_tpl["actions_hi"])
+    elif impersonation_info:
+        imp_tpl = PLAIN_SIGNAL_TEMPLATES["lookalike_website"]
+        b_name = impersonation_info["brand"]
+        cat = f"Fake {b_name.title()} Website"
+        calm_en = imp_tpl["calm_en"]
+        calm_hi = imp_tpl["calm_hi"]
+        about_en = f"What this is: The website says {host}, not {impersonation_info['official']}."
+        about_hi = f"यह क्या है: वेबसाइट का नाम {host} लिखा है, {impersonation_info['official']} नहीं।"
+        seems_en = f"What it pretends to be: The real {b_name.title()} login page."
+        seems_hi = f"यह क्या दिखता है: असली {b_name.title()} का लॉगिन पेज।"
+        affects_en = imp_tpl["affects_en"]
+        affects_hi = imp_tpl["affects_hi"]
+        actions_en = list(imp_tpl["actions_en"])
+        actions_hi = list(imp_tpl["actions_hi"])
+    elif blacklisted:
+        bl_tpl = PLAIN_SIGNAL_TEMPLATES["known_bad_link"]
+        cat = "Known Scam Website"
+        calm_en = bl_tpl["calm_en"]
+        calm_hi = bl_tpl["calm_hi"]
+        about_en = bl_tpl["about_en"]
+        about_hi = bl_tpl["about_hi"]
+        seems_en = bl_tpl["seems_en"]
+        seems_hi = bl_tpl["seems_hi"]
+        affects_en = bl_tpl["affects_en"]
+        affects_hi = bl_tpl["affects_hi"]
+        actions_en = list(bl_tpl["actions_en"])
+        actions_hi = list(bl_tpl["actions_hi"])
+    elif matched_template_keys:
+        primary_key = matched_template_keys[0]
+        ptpl = PAGE_SIGNAL_TEMPLATES[primary_key]
+        cat = ptpl["name_en"]
+        calm_en = "Stay calm. Read this before you click anything."
+        calm_hi = "शांत रहें। कुछ भी क्लिक करने से पहले इसे पढ़ें।"
+        about_en = ptpl["about_en"]
+        about_hi = ptpl["about_hi"]
+        seems_en = ptpl["seems_en"]
+        seems_hi = ptpl["seems_hi"]
+        affects_en = ptpl["affects_en"]
+        affects_hi = ptpl["affects_hi"]
 
         actions_en = []
         actions_hi = []
-        for i in indicators[:3]:
-            actions_en.append(f"Review detected issue — {i['type']}: {i['explanation']}")
-            actions_hi.append(f"पहचाने गए संकेत की समीक्षा करें — {i['type']}: {i['explanation']}")
-        if not actions_en:
-            actions_en.append(f"Verify the identity of '{host}' before submitting sensitive information.")
-            actions_hi.append(f"संवेदनशील जानकारी देने से पहले '{host}' की प्रामाणिकता सत्यापित करें।")
+        for k in dict.fromkeys(matched_template_keys):
+            t_item = PAGE_SIGNAL_TEMPLATES[k]
+            if len(actions_en) < 3:
+                actions_en.append(t_item["action_en"])
+                actions_hi.append(t_item["action_hi"])
+    else:
+        cat = "Unverified Login Page"
+        calm_en = "Stay calm. Check the website address before signing in."
+        calm_hi = "शांत रहें। लॉगिन करने से पहले वेबसाइट का नाम जांच लें।"
+        about_en = "What this is: An unknown website asking for your password."
+        about_hi = "यह क्या है: पासवर्ड मांगने वाली एक अनजान वेबसाइट।"
+        seems_en = "What it pretends to be: A normal sign-in page."
+        seems_hi = "यह क्या दिखता है: एक सामान्य लॉगिन पेज।"
+        affects_en = "What could happen to you: They could steal your password if this site is fake."
+        affects_hi = "आप पर क्या असर होगा: अगर यह साइट नकली है तो पासवर्ड चोरी हो सकता है।"
+        actions_en = [
+            "Check the website address carefully.",
+            "Do not type your password if the name looks wrong.",
+        ]
+        actions_hi = [
+            "वेबसाइट का नाम ध्यान से देखें।",
+            "अगर नाम अजीब लगे तो अपना पासवर्ड न डालें।",
+        ]
 
     return {
         "url": clean_url,
@@ -557,10 +825,13 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
         "malicious_score": malicious_score,
         "dark_pattern_score": dark_pattern_score,
         "base_score": combined,
+        "score_breakdown": breakdown,
         "hard_floor": hard_floor,
         "hard_signal_fired": hard_signals_count > 0,
         "needs_ai": needs_ai,
         "pass1_naive_score": malicious_score,
+        "verdict_line": verdict_en,
+        "verdict_line_hi": verdict_hi,
         "overall_risk_score": level,
         "is_suspicious": is_suspicious,
         "detected_category": cat,
@@ -575,11 +846,10 @@ def evaluate_page_signals(req: PageAuditRequest, memory: dict[str, Any] | None =
         "how_it_affects_user": affects_en,
         "how_it_affects_user_hi": affects_hi,
         "confidence_score_explanation": (
-            f"Combined Risk {combined}/100 (Malicious: {malicious_score}/100, "
-            f"Dark Patterns: {dark_pattern_score}/100, Hard Signals: {hard_signals_count}, "
-            f"Medium Signals: {medium_signals_count})."
+            f"Combined score {combined}/100 (Safety risk {malicious_score}/100, "
+            f"Tricks {dark_pattern_score}/100)."
         ),
         "heuristic_indicators": indicators,
-        "recommended_actions": actions_en,
-        "recommended_actions_hi": actions_hi,
+        "recommended_actions": actions_en[:3],
+        "recommended_actions_hi": actions_hi[:3],
     }

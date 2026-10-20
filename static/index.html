@@ -3,132 +3,296 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TrustLens AI — Guardian Dashboard (CC6-AI05)</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <title>TrustLens Helper — Simple Safety Dashboard &amp; Chat</title>
+  <script src="/vendor/chart.umd.js"></script>
+  <style>
+    :root {
+      --bg: #080d1a;
+      --card: #111827;
+      --surface: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #cbd5e1;
+      --teal: #14b8a6;
+      --red: #ef4444;
+      --amber: #f59e0b;
+      --green: #10b981;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .container { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.4);
+    }
+    .header-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; }
+    .btn {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 14px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+    }
+    .btn:hover { background: #334155; }
+    .btn-teal { background: #0d9488; border-color: #14b8a6; }
+    .btn-red { background: #dc2626; border-color: #ef4444; }
+    .btn-green { background: #059669; border-color: #10b981; }
+    .btn-indigo { background: #4f46e5; border-color: #6366f1; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+    .stat-box { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+    .stat-label { font-size: 14px; color: var(--muted); font-weight: 700; }
+    .stat-val { font-size: 26px; font-weight: 900; margin-top: 4px; }
+    .main-grid { display: grid; grid-template-columns: 5fr 7fr; gap: 18px; }
+    @media (max-width: 900px) { .main-grid { grid-template-columns: 1fr; } }
+    textarea, input[type="text"], select {
+      width: 100%;
+      background: #080d1a;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 16px;
+      font-family: inherit;
+    }
+    .chat-stream {
+      background: #080d1a;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      height: 290px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 16px;
+    }
+    .chat-bubble {
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      line-height: 1.45;
+      font-size: 16px;
+    }
+    .chat-user { background: #1e3a8a; border-color: #3b82f6; align-self: flex-end; max-width: 90%; }
+    .chat-bot { background: var(--surface); border-color: #14b8a6; align-self: flex-start; max-width: 95%; }
+    .chat-role-label { font-size: 12.5px; font-weight: 800; display: block; margin-bottom: 4px; color: #93c5fd; }
+    .alert-card {
+      background: var(--surface);
+      border: 2px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    .alert-header {
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 19px;
+      font-weight: 800;
+      gap: 8px;
+    }
+    .alert-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 16px; }
+    .three-lines {
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .pie-section {
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+    .pie-grid {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      align-items: center;
+      gap: 14px;
+    }
+    @media (max-width: 560px) { .pie-grid { grid-template-columns: 1fr; } }
+    /* Requirement 1: Fixed-height (220px), max-width, relative, overflow-hidden wrapper for EVERY chart canvas */
+    .chart-box {
+      height: 220px;
+      max-height: 220px;
+      width: 100%;
+      max-width: 220px;
+      position: relative;
+      overflow: hidden;
+      margin: 0 auto;
+    }
+    .chart-box canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+    .legend-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 14.5px; }
+    .legend-item { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+    .swatch { width: 14px; height: 14px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
+    .sr-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+    .sr-table th, .sr-table td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+    .steps-box {
+      background: #064e3b;
+      border: 1px solid #10b981;
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-weight: 700;
+    }
+    .hidden { display: none !important; }
+  </style>
 </head>
-<body class="bg-[#080D1A] text-slate-100 font-sans min-h-screen p-5">
-  <div class="max-w-6xl mx-auto space-y-5">
+<body>
+  <div class="container">
 
-    <!-- Top Header -->
-    <header class="bg-[#111827] border border-slate-800 p-5 rounded-2xl flex flex-wrap justify-between items-center gap-4 shadow-xl">
+    <!-- Header -->
+    <header class="panel header-row">
       <div>
-        <h1 class="text-2xl font-extrabold text-teal-400">🛡️ TrustLens AI — Desktop &amp; Browser Guardian</h1>
-        <p class="text-xs text-slate-400 mt-0.5">
-          🔒 Privacy Guarantee: Phone numbers, card numbers, emails &amp; OTPs are redacted locally before cloud AI analysis. Never reads input values.
+        <h1 style="margin:0; font-size:24px; color:#14b8a6;" data-i18n="appTitle">🛡️ TrustLens Safety Helper</h1>
+        <p style="margin:4px 0 0; font-size:14px; color:#cbd5e1;" data-i18n="privacyLine">
+          🔒 Your privacy: Phone numbers, card numbers, emails, and OTPs are hidden on your device before checking.
         </p>
       </div>
-      <div class="flex flex-wrap items-center gap-2.5">
-        <a href="/demo/dark-patterns" target="_blank" class="bg-rose-700 hover:bg-rose-600 text-white text-xs font-bold px-3 py-2 rounded-xl transition">
-          🧪 Dark Patterns Demo Page ↗
-        </a>
-        <a href="/demo/clean" target="_blank" class="bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold px-3 py-2 rounded-xl transition">
-          🌿 Clean Demo Page ↗
-        </a>
-        <button onclick="triggerDemoMode()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition">
-          ⚡ Run 6-Event Demo
-        </button>
-        <button id="pauseBtn" onclick="togglePause()" class="bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-bold px-3.5 py-2 rounded-xl transition">
-          ⏸️ Pause Protection
-        </button>
-        <select id="langSelect" onchange="setLanguage(this.value)" class="bg-[#080D1A] border border-slate-700 text-xs text-slate-200 px-3 py-2 rounded-xl">
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+        <a href="/demo/dark-patterns" target="_blank" class="btn btn-red" data-i18n="demoBadBtn">🧪 Test Scam Page ↗</a>
+        <a href="/demo/clean" target="_blank" class="btn btn-green" data-i18n="demoCleanBtn">🌿 Test Safe Page ↗</a>
+        <button onclick="triggerDemoMode()" class="btn btn-indigo" data-i18n="demo6Btn">⚡ Try 6 Examples</button>
+        <button id="pauseBtn" onclick="togglePause()" class="btn">⏸️ Pause</button>
+        <select id="langSelect" onchange="setLanguage(this.value)" style="width:auto;">
           <option value="en">English (EN)</option>
           <option value="hi">हिंदी (HI)</option>
         </select>
-        <span id="statusBadge" class="bg-emerald-950 border border-emerald-500/50 text-emerald-400 px-3 py-1.5 rounded-full text-xs font-bold">
-          ● Watching (Active)
-        </span>
+        <span id="statusBadge" class="btn btn-green" style="cursor:default;">🟢 Watching</span>
       </div>
     </header>
 
-    <!-- 6 Metric Cards (Including Browser Pages Scanned & Dark Patterns Found) -->
-    <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
-      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
-        <div class="text-xs text-slate-400 font-bold" data-i18n="statScanned">Total Scanned</div>
-        <div id="statScannedVal" class="text-2xl font-black text-teal-400 mt-1">0</div>
+    <!-- 6 Metric Cards -->
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="stat-label" data-i18n="statScanned">Items Checked</div>
+        <div id="statScannedVal" class="stat-val" style="color:#14b8a6;">0</div>
       </div>
-      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
-        <div class="text-xs text-slate-400 font-bold" data-i18n="statBlocked">Threats Blocked</div>
-        <div id="statBlockedVal" class="text-2xl font-black text-rose-500 mt-1">0</div>
+      <div class="stat-box">
+        <div class="stat-label" data-i18n="statBlocked">Scams Caught</div>
+        <div id="statBlockedVal" class="stat-val" style="color:#ef4444;">0</div>
       </div>
-      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
-        <div class="text-xs text-slate-400 font-bold" data-i18n="statPages">Browser Pages Scanned</div>
-        <div id="statPagesVal" class="text-2xl font-black text-sky-400 mt-1">0</div>
+      <div class="stat-box">
+        <div class="stat-label" data-i18n="statPages">Webpages Checked</div>
+        <div id="statPagesVal" class="stat-val" style="color:#38bdf8;">0</div>
       </div>
-      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
-        <div class="text-xs text-slate-400 font-bold" data-i18n="statDP">Dark Patterns Found</div>
-        <div id="statDPVal" class="text-2xl font-black text-purple-400 mt-1">0</div>
+      <div class="stat-box">
+        <div class="stat-label" data-i18n="statDP">Page Tricks Found</div>
+        <div id="statDPVal" class="stat-val" style="color:#c084fc;">0</div>
       </div>
-      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
-        <div class="text-xs text-slate-400 font-bold" data-i18n="statFP">Auto-FP Corrected</div>
-        <div id="statFPVal" class="text-2xl font-black text-amber-400 mt-1">0</div>
+      <div class="stat-box">
+        <div class="stat-label" data-i18n="statFP">Safe Alerts Cleared</div>
+        <div id="statFPVal" class="stat-val" style="color:#fbbf24;">0</div>
       </div>
-      <div class="bg-[#111827] border border-slate-800 p-4 rounded-xl">
-        <div class="text-xs text-slate-400 font-bold" data-i18n="statAcc">Benchmark Accuracy</div>
-        <div id="statAccVal" class="text-2xl font-black text-emerald-400 mt-1">100%</div>
+      <div class="stat-box">
+        <div class="stat-label" data-i18n="statAcc">Accuracy</div>
+        <div id="statAccVal" class="stat-val" style="color:#10b981;">100%</div>
       </div>
     </div>
 
-    <!-- Main 2-Column Grid -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+    <!-- Main 2-Column Layout -->
+    <div class="main-grid">
 
-      <!-- Left Column -->
-      <div class="lg:col-span-5 space-y-5">
-        <div class="bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-3 shadow-xl">
-          <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider" data-i18n="manualScanTitle">🔍 Manual Text / Link / Image Audit</h2>
-          <textarea id="manualInput" rows="3" placeholder="Paste suspicious SMS, WhatsApp message, or URL (e.g. arnazon.com)..."
-            class="w-full bg-[#080D1A] border border-slate-700 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-teal-400"></textarea>
-          <div class="flex gap-2">
-            <button onclick="submitManualText()" class="flex-1 bg-teal-600 hover:bg-teal-500 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition">
-              🛡️ Audit Text / URL
-            </button>
-            <label class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 px-4 rounded-xl text-xs cursor-pointer transition">
-              🖼️ Upload Screenshot
+      <!-- Left Column: Ask TrustLens Chatbot + Manual Check + Dashboard Pie -->
+      <div style="display:flex; flex-direction:column; gap:18px;">
+
+        <!-- Ask TrustLens Chatbot Panel -->
+        <div class="panel">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <h2 style="margin:0; font-size:18px;" data-i18n="chatTitle">💬 Ask TrustLens</h2>
+            <div style="display:flex; gap:6px;">
+              <button onclick="stopReadingAloud()" class="btn btn-red" style="padding:4px 10px; font-size:13px;" data-i18n="stopBtn">⏹️ Stop</button>
+              <button onclick="clearChat()" class="btn" style="padding:4px 10px; font-size:13px;" data-i18n="clearChatBtn">🗑️ Clear chat</button>
+            </div>
+          </div>
+          <div id="chatStream" class="chat-stream" aria-live="polite"></div>
+          <div style="display:flex; gap:8px; margin-top:10px;">
+            <input id="chatInputBox" type="text" placeholder="Ask a question or paste a message..."
+              onkeydown="if(event.key==='Enter') sendChatMessage()" />
+            <button onclick="sendChatMessage()" class="btn btn-teal" style="white-space:nowrap;" data-i18n="sendBtn">Send</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2 style="margin:0 0 10px; font-size:18px;" data-i18n="manualScanTitle">🔍 Check a Message, Link, or Picture</h2>
+          <textarea id="manualInput" rows="2" placeholder="Paste any message or website link here (like arnazon.com)..."></textarea>
+          <div style="display:flex; gap:10px; margin-top:10px;">
+            <button onclick="submitManualText()" class="btn btn-teal" style="flex:1;" data-i18n="checkBtn">🛡️ Check Now</button>
+            <label class="btn" style="background:#2563eb; border-color:#3b82f6;">
+              <span data-i18n="uploadBtn">🖼️ Check Picture</span>
               <input type="file" id="imageUploadInput" accept="image/png,image/jpeg,image/webp" class="hidden" onchange="submitManualImage()" />
             </label>
           </div>
         </div>
 
-        <div class="bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-3 shadow-xl">
-          <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider">🌐 Safe Redirect &amp; WHOIS Domain Check</h2>
-          <div class="flex gap-2">
-            <input id="urlSafetyInput" type="text" placeholder="e.g. bit.ly/... or sbi.co.in"
-              class="flex-1 bg-[#080D1A] border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-teal-400" />
-            <button onclick="checkUrlSafety()" class="bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-bold px-3.5 py-2 rounded-xl">
-              Check
-            </button>
+        <!-- Dashboard Pie Chart: "What kinds of scams?" -->
+        <div class="panel">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <h2 style="margin:0; font-size:18px;" data-i18n="dashPieTitle">🥧 What kinds of scams?</h2>
+            <button onclick="toggleElement('dashPieTableWrap')" class="btn" style="font-size:13px; padding:4px 10px;" data-i18n="showAsListBtn">Show as list</button>
           </div>
-          <div id="urlSafetyOutput" class="text-xs text-slate-400 bg-[#080D1A] p-3 rounded-xl border border-slate-800">
-            Follows redirects via safe HEAD request (no downloads) and queries IANA WHOIS creation date.
+          <div class="pie-grid">
+            <div class="chart-box">
+              <canvas id="dashboardBreakdownPie"></canvas>
+            </div>
+            <ul id="dashboardBreakdownLegend" class="legend-list"></ul>
           </div>
-        </div>
-
-        <div class="bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-2 shadow-xl">
-          <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider">📈 Live Risk Score Timeline (Recent Scans)</h2>
-          <div class="h-44"><canvas id="timelineChart"></canvas></div>
+          <div id="dashPieTableWrap" class="hidden">
+            <table class="sr-table" aria-label="What kinds of scams breakdown">
+              <thead>
+                <tr>
+                  <th data-i18n="colCategory">Kind of item</th>
+                  <th data-i18n="colCount">Count</th>
+                </tr>
+              </thead>
+              <tbody id="dashPieTableBody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      <!-- Right Column: Live Interception Feed -->
-      <div class="lg:col-span-7 bg-[#111827] border border-slate-800 p-5 rounded-2xl space-y-4 shadow-xl flex flex-col">
-        <div class="flex justify-between items-center">
-          <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider" data-i18n="liveFeedTitle">⚡ Live Ambient &amp; Browser Interception Feed</h2>
-          <span id="queueCounter" class="text-xs text-teal-400 font-semibold">Queue: 0 pending</span>
+      <!-- Right Column: Live Explanations Feed -->
+      <div class="panel" style="display:flex; flex-direction:column;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h2 style="margin:0; font-size:18px;" data-i18n="liveFeedTitle">⚡ Recent Explanations</h2>
+          <span id="queueCounter" style="font-size:14px; color:#14b8a6; font-weight:700;">0 waiting</span>
         </div>
-        <div id="feedList" class="space-y-4 overflow-y-auto max-h-[600px] pr-1">
-          <div class="text-xs text-slate-500 italic p-4">
-            Watching Browser Extension pages, clipboard copies (Ctrl+C), screenshots (Win+Shift+S), and Windows notifications...
+        <div id="feedList" style="overflow-y:auto; max-height:850px; padding-right:4px;">
+          <div style="color:#94a3b8; padding:12px;" data-i18n="waitingMsg">
+            Watching copied text (Ctrl+C), screenshots, notifications, and open webpages...
           </div>
         </div>
       </div>
     </div>
 
-    <footer class="bg-red-950/40 border border-red-500/30 p-4 rounded-2xl flex flex-wrap justify-between items-center gap-3">
-      <div class="text-xs text-red-200">
-        🚨 <b>National Cyber Crime Helpline:</b> Dial <b class="text-white">1930</b> immediately if you lost money, or file a complaint online.
+    <footer class="panel header-row" style="background:#450a0a; border-color:#ef4444;">
+      <div style="font-size:15px; font-weight:700;" data-i18n="helplineFooter">
+        🚨 Lost money to a scam? Call the National Cyber Helpline at 1930 right away.
       </div>
-      <a href="https://cybercrime.gov.in" target="_blank" rel="noopener noreferrer"
-        class="bg-red-600 hover:bg-red-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition">
+      <a href="https://cybercrime.gov.in" target="_blank" rel="noopener noreferrer" class="btn btn-red" data-i18n="reportPortalBtn">
         Open cybercrime.gov.in ↗
       </a>
     </footer>
@@ -137,41 +301,365 @@
   <script>
     let currentLang = 'en';
     let isPaused = false;
-    let timelineChart = null;
+    let localToken = '';
+    let chatHistory = [];
     let lastRenderedHash = '';
+
+    // Requirement 2, 3 & 4: Central Map of Chart instances + data signatures, capped at MAX_LIVE_CHARTS = 20
+    const MAX_LIVE_CHARTS = 20;
+    const chartRegistry = new Map(); // id -> { chart: Chart, signature: string }
+
+    const PALETTE = ['#EF4444', '#F97316', '#EAB308', '#A855F7', '#38BDF8', '#10B981'];
 
     const i18n = {
       en: {
-        statScanned: "Total Scanned",
-        statBlocked: "Threats Blocked",
-        statPages: "Browser Pages Scanned",
-        statDP: "Dark Patterns Found",
-        statFP: "Auto-FP Corrected",
-        statAcc: "Benchmark Accuracy",
-        manualScanTitle: "🔍 Manual Text / Link / Image Audit",
-        liveFeedTitle: "⚡ Live Ambient & Browser Interception Feed"
+        appTitle: "🛡️ TrustLens Safety Helper",
+        privacyLine: "🔒 Your privacy: Phone numbers, card numbers, emails, and OTPs are hidden on your device before checking.",
+        demoBadBtn: "🧪 Test Scam Page ↗",
+        demoCleanBtn: "🌿 Test Safe Page ↗",
+        demo6Btn: "⚡ Try 6 Examples",
+        statScanned: "Items Checked",
+        statBlocked: "Scams Caught",
+        statPages: "Webpages Checked",
+        statDP: "Page Tricks Found",
+        statFP: "Safe Alerts Cleared",
+        statAcc: "Accuracy",
+        chatTitle: "💬 Ask TrustLens",
+        clearChatBtn: "🗑️ Clear chat",
+        sendBtn: "Send",
+        manualScanTitle: "🔍 Check a Message, Link, or Picture",
+        checkBtn: "🛡️ Check Now",
+        uploadBtn: "🖼️ Check Picture",
+        dashPieTitle: "🥧 What kinds of scams?",
+        whyRiskyTitle: "🥧 Why is this risky?",
+        showAsListBtn: "Show as list",
+        colCategory: "Reason / Kind",
+        colCount: "Points / Count",
+        liveFeedTitle: "⚡ Recent Explanations",
+        waitingMsg: "Watching copied text (Ctrl+C), screenshots, notifications, and open webpages...",
+        helplineFooter: "🚨 Lost money to a scam? Call the National Cyber Helpline at 1930 right away.",
+        reportPortalBtn: "Open cybercrime.gov.in ↗",
+        stepsHeading: "✅ What to do now:",
+        readAloudBtn: "🔊 Read aloud",
+        stopBtn: "⏹️ Stop",
+        moreDetailsBtn: "▼ More details",
+        safeBtn: "✅ This is safe",
+        scamBtn: "🚨 This was a scam",
+        reportBtn: "📞 Report to 1930",
+        ptsWord: "points",
+        userLabel: "You",
+        botLabel: "TrustLens Helper",
+        welcomeChat: "Ask me about any message, link, or call. Never type your real OTP or password here."
       },
       hi: {
-        statScanned: "कुल स्कैन किए गए",
-        statBlocked: "खतरे रोके गए",
-        statPages: "ब्राउज़र पेज स्कैन किए गए",
-        statDP: "डार्क पैटर्न मिले",
-        statFP: "स्वतः सुधारे गए (Auto-FP)",
-        statAcc: "सिस्टम सटीकता",
-        manualScanTitle: "🔍 मैनुअल टेक्स्ट / लिंक / स्क्रीनशॉट जांच",
-        liveFeedTitle: "⚡ लाइव सुरक्षा और ब्राउज़र इंटरसेप्शन फीड"
+        appTitle: "🛡️ TrustLens सुरक्षा सहायक",
+        privacyLine: "🔒 आपकी गोपनीयता: जांच से पहले फोन नंबर, कार्ड नंबर, ईमेल और OTP आपके फोन/कंप्यूटर पर ही छुपा दिए जाते हैं।",
+        demoBadBtn: "🧪 नकली पेज टेस्ट करें ↗",
+        demoCleanBtn: "🌿 सुरक्षित पेज टेस्ट करें ↗",
+        demo6Btn: "⚡ 6 उदाहरण देखें",
+        statScanned: "कुल जांच",
+        statBlocked: "पकड़े गए धोखे",
+        statPages: "वेबपेज जांचे गए",
+        statDP: "पेज की चालें मिलीं",
+        statFP: "सुरक्षित मैसेज पहचाने",
+        statAcc: "सटीकता",
+        chatTitle: "💬 TrustLens से पूछें",
+        clearChatBtn: "🗑️ चैट साफ करें",
+        sendBtn: "भेजें",
+        manualScanTitle: "🔍 कोई भी मैसेज, लिंक या फोटो जांचें",
+        checkBtn: "🛡️ अभी जांचें",
+        uploadBtn: "🖼️ फोटो जांचें",
+        dashPieTitle: "🥧 किस तरह के धोखे मिले?",
+        whyRiskyTitle: "🥧 इसमें क्या जोखिम है?",
+        showAsListBtn: "लिस्ट में देखें",
+        colCategory: "कारण / प्रकार",
+        colCount: "अंक / संख्या",
+        liveFeedTitle: "⚡ आसान भाषा में परिणाम",
+        waitingMsg: "कॉपी किए गए टेक्स्ट (Ctrl+C), स्क्रीनशॉट, नोटिफिकेशन और वेबपेज देखे जा रहे हैं...",
+        helplineFooter: "🚨 अगर धोखे से पैसे कट गए हैं, तो तुरंत 1930 पर कॉल करें।",
+        reportPortalBtn: "cybercrime.gov.in खोलें ↗",
+        stepsHeading: "✅ अब क्या करें:",
+        readAloudBtn: "🔊 बोलकर सुनें",
+        stopBtn: "⏹️ रोकें",
+        moreDetailsBtn: "▼ और जानकारी देखें",
+        safeBtn: "✅ यह सुरक्षित है",
+        scamBtn: "🚨 यह धोखा है",
+        reportBtn: "📞 1930 पर रिपोर्ट करें",
+        ptsWord: "अंक",
+        userLabel: "आप",
+        botLabel: "TrustLens सहायक",
+        welcomeChat: "मुझसे किसी भी मैसेज, लिंक या कॉल के बारे में पूछें। अपना असली OTP या पासवर्ड यहाँ कभी न लिखें।"
       }
     };
 
-    function escapeHtml(s) {
-      return String(s || '').replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+    /**
+     * Requirement 2, 3 & 4: Manages one Chart instance per canvas id in `chartRegistry`.
+     * - Updates `chart.data` and calls `chart.update()` ONLY when the JSON signature of counts/labels changes.
+     * - Calls `chart.destroy()` before rebuilding if a canvas element was replaced.
+     * - Enforces `MAX_LIVE_CHARTS` (20) by destroying the oldest non-dashboard chart when full.
+     */
+    function upsertPieChart(canvasId, labels, dataValues, backgroundColors, centerText) {
+      if (!window.Chart) return;
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+
+      const signature = JSON.stringify({ l: labels, d: dataValues, c: centerText });
+      const existing = chartRegistry.get(canvasId);
+
+      if (existing) {
+        if (existing.chart && existing.chart.canvas === canvas) {
+          if (existing.signature === signature) {
+            return; // Data has not changed; do not touch or resize the chart
+          }
+          existing.chart.data.labels = labels;
+          existing.chart.data.datasets[0].data = dataValues;
+          existing.chart.data.datasets[0].backgroundColor = backgroundColors;
+          existing.chart.config.centerText = centerText;
+          if (existing.chart.options && existing.chart.options.plugins) {
+            existing.chart.options.plugins.centerText = centerText;
+          }
+          existing.chart.update();
+          existing.signature = signature;
+          return;
+        }
+        // Canvas node was replaced in DOM; destroy old Chart instance before rebuilding
+        try {
+          existing.chart.destroy();
+        } catch (_) {}
+        chartRegistry.delete(canvasId);
+      }
+
+      // Enforce cap of MAX_LIVE_CHARTS (never evict the main dashboard chart)
+      while (chartRegistry.size >= MAX_LIVE_CHARTS) {
+        let oldestKey = null;
+        for (const k of chartRegistry.keys()) {
+          if (k !== 'dashboardBreakdownPie') {
+            oldestKey = k;
+            break;
+          }
+        }
+        if (!oldestKey) break;
+        destroyChartById(oldestKey);
+      }
+
+      const instance = new window.Chart(canvas, {
+        type: 'doughnut',
+        centerText: centerText,
+        data: {
+          labels: labels,
+          datasets: [{
+            data: dataValues,
+            backgroundColor: backgroundColors,
+            borderWidth: 2,
+            borderColor: '#0F172A'
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            centerText: centerText
+          }
+        }
+      });
+
+      chartRegistry.set(canvasId, { chart: instance, signature: signature });
+    }
+
+    function destroyChartById(canvasId) {
+      const entry = chartRegistry.get(canvasId);
+      if (entry && entry.chart) {
+        try {
+          entry.chart.destroy();
+        } catch (_) {}
+      }
+      chartRegistry.delete(canvasId);
+    }
+
+    function destroyAllAlertCharts() {
+      for (const key of Array.from(chartRegistry.keys())) {
+        if (key !== 'dashboardBreakdownPie') {
+          destroyChartById(key);
+        }
+      }
+    }
+
+    async function ensureLocalToken() {
+      if (localToken) return localToken;
+      try {
+        const r = await fetch('/api/local-token');
+        if (r.ok) {
+          const d = await r.json();
+          localToken = d.token || '';
+        }
+      } catch (_) {}
+      return localToken;
+    }
+
+    function toggleElement(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('hidden');
+    }
+
+    function fallbackVerdictLine(risk, lang) {
+      const r = String(risk || 'Low').toLowerCase();
+      if (lang === 'hi') {
+        if (r.startsWith('high')) return '🛑 यह एक धोखा है';
+        if (r.startsWith('med')) return '⚠️ सावधान रहें';
+        return '✅ यह सुरक्षित लगता है';
+      }
+      if (r.startsWith('high')) return '🛑 This is a scam';
+      if (r.startsWith('med')) return '⚠️ Be careful';
+      return '✅ This looks safe';
+    }
+
+    async function speakText(text) {
+      if (!text) return;
+      const tok = await ensureLocalToken();
+      try {
+        await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-TrustLens-Token': tok },
+          body: JSON.stringify({ action: 'speak', text, language: currentLang })
+        });
+      } catch (_) {}
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = currentLang === 'hi' ? 'hi-IN' : 'en-IN';
+        window.speechSynthesis.speak(u);
+      }
+    }
+
+    async function stopReadingAloud() {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      const tok = await ensureLocalToken();
+      try {
+        await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-TrustLens-Token': tok },
+          body: JSON.stringify({ action: 'stop', text: '', language: currentLang })
+        });
+      } catch (_) {}
+    }
+
+    function speakItem(idx) {
+      const item = window._latestItems?.[idx];
+      if (!item) return;
+      const a = item.analysis || {};
+      const useHi = currentLang === 'hi';
+      const verdict = (useHi ? a.verdict_line_hi : a.verdict_line) || fallbackVerdictLine(a.overall_risk_score, currentLang);
+      const about = (useHi ? a.what_input_is_about_hi : a.what_input_is_about) || a.what_input_is_about || '';
+      const seems = (useHi ? a.what_it_seems_to_be_hi : a.what_it_seems_to_be) || a.what_it_seems_to_be || '';
+      const affects = (useHi ? a.how_it_affects_user_hi : a.how_it_affects_user) || a.how_it_affects_user || '';
+      const acts = ((useHi && a.recommended_actions_hi?.length ? a.recommended_actions_hi : a.recommended_actions) || []).slice(0, 3);
+      speakText([verdict, about, seems, affects, ...acts].join('. '));
+    }
+
+    function appendChatBubble(roleLabel, bodyText, isUser, stepsList = []) {
+      const stream = document.getElementById('chatStream');
+      const bubble = document.createElement('div');
+      bubble.className = `chat-bubble ${isUser ? 'chat-user' : 'chat-bot'}`;
+
+      const topRow = document.createElement('div');
+      topRow.style.display = 'flex';
+      topRow.style.justifyContent = 'space-between';
+      topRow.style.alignItems = 'center';
+
+      const roleSpan = document.createElement('span');
+      roleSpan.className = 'chat-role-label';
+      roleSpan.textContent = roleLabel;
+      topRow.appendChild(roleSpan);
+
+      const speechString = [bodyText, ...stepsList].join('. ');
+      if (!isUser) {
+        const rdBtn = document.createElement('button');
+        rdBtn.className = 'btn';
+        rdBtn.style.padding = '2px 8px';
+        rdBtn.style.fontSize = '12px';
+        rdBtn.textContent = i18n[currentLang].readAloudBtn;
+        rdBtn.addEventListener('click', () => speakText(speechString));
+        topRow.appendChild(rdBtn);
+      }
+
+      bubble.appendChild(topRow);
+
+      const textDiv = document.createElement('div');
+      textDiv.textContent = bodyText;
+      bubble.appendChild(textDiv);
+
+      if (Array.isArray(stepsList) && stepsList.length > 0) {
+        const ol = document.createElement('ol');
+        ol.style.margin = '6px 0 0 18px';
+        ol.style.padding = '0';
+        ol.style.fontWeight = '700';
+        stepsList.slice(0, 3).forEach(st => {
+          const li = document.createElement('li');
+          li.textContent = st;
+          ol.appendChild(li);
+        });
+        bubble.appendChild(ol);
+      }
+
+      stream.appendChild(bubble);
+      stream.scrollTop = stream.scrollHeight;
+    }
+
+    function clearChat() {
+      chatHistory = [];
+      const stream = document.getElementById('chatStream');
+      stream.textContent = '';
+      const t = i18n[currentLang];
+      appendChatBubble(t.botLabel, t.welcomeChat, false);
+    }
+
+    async function sendChatMessage(optionalText) {
+      const box = document.getElementById('chatInputBox');
+      const msg = (optionalText !== undefined ? optionalText : box.value).trim();
+      if (!msg) return;
+      if (optionalText === undefined) box.value = '';
+
+      const t = i18n[currentLang];
+      appendChatBubble(t.userLabel, msg, true);
+
+      const tok = await ensureLocalToken();
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-TrustLens-Token': tok },
+          body: JSON.stringify({
+            message: msg,
+            language: currentLang,
+            history: chatHistory.slice(-6)
+          })
+        });
+        if (res.status === 429) {
+          appendChatBubble(t.botLabel, "Please wait a moment before sending more messages.", false);
+          return;
+        }
+        const d = await res.json();
+        const useHi = currentLang === 'hi';
+        const vLine = (useHi ? d.verdict_line_hi : d.verdict_line) || d.verdict_line || '';
+        const rep = (useHi && d.reply_hi ? d.reply_hi : d.reply) || '';
+        const steps = (useHi && d.steps_hi?.length ? d.steps_hi : d.steps) || [];
+        const combined = `${vLine} — ${rep}`;
+        chatHistory.push({ role: 'user', content: msg.slice(0, 500) });
+        chatHistory.push({ role: 'assistant', content: combined.slice(0, 500) });
+        appendChatBubble(t.botLabel, combined, false, steps);
+      } catch (_) {
+        appendChatBubble(t.botLabel, "I can only do basic checks right now.", false);
+      }
     }
 
     async function setLanguage(lang) {
       currentLang = lang;
       document.querySelectorAll('[data-i18n]').forEach(el => {
         const k = el.getAttribute('data-i18n');
-        if (i18n[lang] && i18n[lang][k]) el.innerText = i18n[lang][k];
+        if (i18n[lang] && i18n[lang][k]) el.textContent = i18n[lang][k];
       });
       await fetch('/api/settings', {
         method: 'POST',
@@ -179,7 +667,9 @@
         body: JSON.stringify({ language: lang })
       });
       lastRenderedHash = '';
-      pollFeed();
+      clearChat();
+      await pollFeed();
+      await pollDashboardBreakdown();
     }
 
     async function togglePause() {
@@ -194,7 +684,7 @@
 
     async function triggerDemoMode() {
       await fetch('/api/demo', { method: 'POST' });
-      pollFeed();
+      setTimeout(() => { pollFeed(); pollDashboardBreakdown(); }, 1200);
     }
 
     async function submitManualText() {
@@ -207,7 +697,8 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input_text: txt, channel: 'dashboard', language: currentLang })
       });
-      pollFeed();
+      await pollFeed();
+      await pollDashboardBreakdown();
     }
 
     async function submitManualImage() {
@@ -217,78 +708,333 @@
       fd.append('file', input.files[0]);
       await fetch('/api/audit-image', { method: 'POST', body: fd });
       input.value = '';
-      pollFeed();
-    }
-
-    async function checkUrlSafety() {
-      const url = document.getElementById('urlSafetyInput').value.trim();
-      if (!url) return;
-      const out = document.getElementById('urlSafetyOutput');
-      out.innerText = "Checking redirect chain & WHOIS...";
-      try {
-        const res = await fetch('/api/url-safety', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url })
-        });
-        const d = await res.json();
-        out.innerHTML = `
-          <div><b>Final Destination:</b> <span class="text-teal-300">${escapeHtml(d.final_url || d.detail)}</span></div>
-          <div><b>HTTP Status:</b> ${escapeHtml(d.http_status ?? 'Unreachable')} | <b>WHOIS Created:</b> ${escapeHtml(d.domain_created || 'N/A')}</div>
-        `;
-      } catch (e) {
-        out.innerText = "Safety check failed: " + e;
-      }
+      await pollFeed();
+      await pollDashboardBreakdown();
     }
 
     async function sendFeedback(itemId, snippet, domain, fbType) {
+      const tok = await ensureLocalToken();
       await fetch('/api/feedback', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-TrustLens-Token': tok },
         body: JSON.stringify({
-          item_id: itemId,
-          input_snippet: snippet,
+          item_id: itemId || '',
+          input_snippet: domain || snippet || '',
           domain: domain || null,
           feedback_type: fbType,
-          lesson_note: `Dashboard feedback (${fbType}) on ${snippet.slice(0, 50)}`
+          lesson_note: domain ? `User marked ${domain} as ${fbType}` : ''
         })
       });
-      pollFeed();
+      await pollFeed();
+      await pollDashboardBreakdown();
     }
 
     function copyAndReport(index) {
       const item = window._latestItems?.[index];
       if (!item) return;
       const a = item.analysis || {};
-      const report = `TrustLens AI Cybercrime Report\nSource: ${item.source}\nRisk: ${a.overall_risk_score} (${a.numeric_risk_score}/100)\nCategory: ${a.fraud_category}\nRedacted Input: ${item.input}\nDetails: ${a.what_it_seems_to_be}\nHelpline: 1930`;
+      const report = `[TL_INTERNAL] TrustLens Report\nVerdict: ${a.verdict_line}\nAbout: ${a.what_input_is_about}\nText: ${item.input}\nHelpline: 1930`;
       navigator.clipboard.writeText(report);
       window.open('https://cybercrime.gov.in', '_blank', 'noopener');
     }
 
-    function updateTimelineChart(items) {
-      const reversed = [...items].slice(0, 12).reverse();
-      const labels = reversed.map(i => i.timestamp || '');
-      const pass1Scores = reversed.map(i => i.heuristics?.pass1_naive_score ?? 0);
-      const finalScores = reversed.map(i => i.analysis?.numeric_risk_score ?? 0);
+    async function pollDashboardBreakdown() {
+      try {
+        const tok = await ensureLocalToken();
+        const res = await fetch('/api/stats/breakdown', {
+          headers: { 'X-TrustLens-Token': tok }
+        });
+        if (!res.ok) return;
+        const d = await res.json();
+        const cats = d.categories || [];
+        const useHi = currentLang === 'hi';
 
-      const ctx = document.getElementById('timelineChart').getContext('2d');
-      if (timelineChart) timelineChart.destroy();
-      timelineChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [
-            { label: 'Final Score', data: finalScores, borderColor: '#14B8A6', backgroundColor: 'rgba(20,184,166,0.15)', fill: true, tension: 0.3 },
-            { label: 'Malicious / Pass-1', data: pass1Scores, borderColor: '#64748B', borderDash: [4, 4], fill: false, tension: 0.3 }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          scales: { y: { min: 0, max: 100, ticks: { color: '#94A3B8' } }, x: { ticks: { color: '#94A3B8', font: { size: 9 } } } },
-          plugins: { legend: { labels: { color: '#CBD5E1', boxWidth: 10, font: { size: 10 } } } }
+        const labels = [];
+        const counts = [];
+        const colors = [];
+
+        cats.forEach((c, i) => {
+          const lbl = useHi ? (c.label_hi || c.label_en) : c.label_en;
+          const cnt = Number(c.count || 0);
+          const col = c.key === 'safe_items' ? '#10B981' : PALETTE[i % (PALETTE.length - 1)];
+          labels.push(lbl);
+          counts.push(cnt);
+          colors.push(col);
+        });
+
+        const dashSig = JSON.stringify({ l: labels, d: counts });
+        const existingDash = chartRegistry.get('dashboardBreakdownPie');
+
+        if (!existingDash || existingDash.signature !== dashSig) {
+          const legendEl = document.getElementById('dashboardBreakdownLegend');
+          const tbodyEl = document.getElementById('dashPieTableBody');
+          legendEl.textContent = '';
+          tbodyEl.textContent = '';
+
+          cats.forEach((c, i) => {
+            const lbl = labels[i];
+            const cnt = counts[i];
+            const col = colors[i];
+
+            const li = document.createElement('li');
+            li.className = 'legend-item';
+            const sw = document.createElement('span');
+            sw.className = 'swatch';
+            sw.style.background = col;
+            const txt = document.createElement('span');
+            txt.textContent = `${lbl}: ${cnt}`;
+            li.appendChild(sw);
+            li.appendChild(txt);
+            legendEl.appendChild(li);
+
+            const tr = document.createElement('tr');
+            const td1 = document.createElement('td');
+            td1.textContent = lbl;
+            const td2 = document.createElement('td');
+            td2.textContent = String(cnt);
+            tr.appendChild(td1);
+            tr.appendChild(td2);
+            tbodyEl.appendChild(tr);
+          });
         }
+
+        upsertPieChart(
+          'dashboardBreakdownPie',
+          labels,
+          counts,
+          colors,
+          String(d.total_categorized || 0)
+        );
+      } catch (_) {}
+    }
+
+    function buildAlertCardDOM(item, idx, t, useHi, canvasId) {
+      const a = item.analysis || {};
+      const h = item.heuristics || {};
+      const risk = a.overall_risk_score || 'Low';
+      const score = Number(a.numeric_risk_score ?? 0);
+      const borderCol = risk === 'High' ? '#ef4444' : (risk === 'Medium' ? '#f59e0b' : '#10b981');
+      const headerBg = risk === 'High' ? '#991b1b' : (risk === 'Medium' ? '#b45309' : '#065f46');
+
+      const verdictLine = (useHi ? a.verdict_line_hi : a.verdict_line) || fallbackVerdictLine(risk, currentLang);
+      const calm = (useHi ? a.calm_down_message_hi : a.calm_down_message) || a.calm_down_message || '';
+      const about = (useHi ? a.what_input_is_about_hi : a.what_input_is_about) || a.what_input_is_about || '';
+      const seems = (useHi ? a.what_it_seems_to_be_hi : a.what_it_seems_to_be) || a.what_it_seems_to_be || '';
+      const affects = (useHi ? a.how_it_affects_user_hi : a.how_it_affects_user) || a.how_it_affects_user || '';
+      const actions = ((useHi && a.recommended_actions_hi?.length ? a.recommended_actions_hi : a.recommended_actions) || []).slice(0, 3);
+      const breakdown = Array.isArray(a.score_breakdown) ? a.score_breakdown : [];
+
+      const card = document.createElement('div');
+      card.className = 'alert-card';
+      card.style.borderColor = borderCol;
+
+      const header = document.createElement('div');
+      header.className = 'alert-header';
+      header.style.background = headerBg;
+      const vSpan = document.createElement('span');
+      vSpan.textContent = verdictLine;
+
+      const btnGroup = document.createElement('div');
+      btnGroup.style.display = 'flex';
+      btnGroup.style.gap = '6px';
+
+      const speakBtn = document.createElement('button');
+      speakBtn.className = 'btn';
+      speakBtn.textContent = t.readAloudBtn;
+      speakBtn.addEventListener('click', () => speakItem(idx));
+
+      const stopBtn = document.createElement('button');
+      stopBtn.className = 'btn';
+      stopBtn.textContent = t.stopBtn;
+      stopBtn.addEventListener('click', () => stopReadingAloud());
+
+      btnGroup.appendChild(speakBtn);
+      btnGroup.appendChild(stopBtn);
+      header.appendChild(vSpan);
+      header.appendChild(btnGroup);
+      card.appendChild(header);
+
+      const body = document.createElement('div');
+      body.className = 'alert-body';
+
+      const calmEl = document.createElement('div');
+      calmEl.style.color = '#7dd3fc';
+      calmEl.style.fontWeight = '700';
+      calmEl.textContent = calm;
+      body.appendChild(calmEl);
+
+      const threeBox = document.createElement('div');
+      threeBox.className = 'three-lines';
+      const l1 = document.createElement('div');
+      l1.textContent = about;
+      const l2 = document.createElement('div');
+      l2.style.color = '#fde68a';
+      l2.textContent = seems;
+      const l3 = document.createElement('div');
+      l3.style.color = '#fca5a5';
+      l3.style.fontWeight = '700';
+      l3.textContent = affects;
+      threeBox.appendChild(l1);
+      threeBox.appendChild(l2);
+      threeBox.appendChild(l3);
+      body.appendChild(threeBox);
+
+      if (breakdown.length > 0 && canvasId) {
+        const pieSec = document.createElement('div');
+        pieSec.className = 'pie-section';
+
+        const pieTop = document.createElement('div');
+        pieTop.style.display = 'flex';
+        pieTop.style.justifyContent = 'space-between';
+        pieTop.style.alignItems = 'center';
+        pieTop.style.marginBottom = '8px';
+
+        const pieTitle = document.createElement('strong');
+        pieTitle.textContent = t.whyRiskyTitle;
+
+        const listBtn = document.createElement('button');
+        listBtn.className = 'btn';
+        listBtn.style.fontSize = '13px';
+        listBtn.style.padding = '3px 10px';
+        listBtn.textContent = t.showAsListBtn;
+        const tableWrapId = `alert_pie_tbl_${item.id || idx}`;
+        listBtn.addEventListener('click', () => toggleElement(tableWrapId));
+
+        pieTop.appendChild(pieTitle);
+        pieTop.appendChild(listBtn);
+        pieSec.appendChild(pieTop);
+
+        const pieGrid = document.createElement('div');
+        pieGrid.className = 'pie-grid';
+
+        // Fixed-height 220px, max-width 220px, relative, overflow:hidden wrapper
+        const cWrap = document.createElement('div');
+        cWrap.className = 'chart-box';
+        const canvas = document.createElement('canvas');
+        canvas.id = canvasId;
+        cWrap.appendChild(canvas);
+
+        const ul = document.createElement('ul');
+        ul.className = 'legend-list';
+
+        const tblWrap = document.createElement('div');
+        tblWrap.id = tableWrapId;
+        tblWrap.className = 'hidden';
+        const tbl = document.createElement('table');
+        tbl.className = 'sr-table';
+        const tbody = document.createElement('tbody');
+
+        breakdown.forEach((s, sIdx) => {
+          const sLbl = useHi ? (s.label_hi || s.label_en) : s.label_en;
+          const pts = Number(s.points || 0);
+          const col = s.key === 'nothing_suspicious' ? '#10B981' : PALETTE[sIdx % (PALETTE.length - 1)];
+
+          const li = document.createElement('li');
+          li.className = 'legend-item';
+          const sw = document.createElement('span');
+          sw.className = 'swatch';
+          sw.style.background = col;
+          const sp = document.createElement('span');
+          sp.textContent = `${sLbl}: ${pts} ${t.ptsWord}`;
+          li.appendChild(sw);
+          li.appendChild(sp);
+          ul.appendChild(li);
+
+          const tr = document.createElement('tr');
+          const td1 = document.createElement('td');
+          td1.textContent = sLbl;
+          const td2 = document.createElement('td');
+          td2.textContent = `${pts} ${t.ptsWord}`;
+          tr.appendChild(td1);
+          tr.appendChild(td2);
+          tbody.appendChild(tr);
+        });
+
+        tbl.appendChild(tbody);
+        tblWrap.appendChild(tbl);
+        pieGrid.appendChild(cWrap);
+        pieGrid.appendChild(ul);
+        pieSec.appendChild(pieGrid);
+        pieSec.appendChild(tblWrap);
+        body.appendChild(pieSec);
+      }
+
+      const stepsBox = document.createElement('div');
+      stepsBox.className = 'steps-box';
+      const stTitle = document.createElement('div');
+      stTitle.style.color = '#a7f3d0';
+      stTitle.style.marginBottom = '4px';
+      stTitle.textContent = t.stepsHeading;
+      stepsBox.appendChild(stTitle);
+      actions.forEach((act, aIdx) => {
+        const stepLine = document.createElement('div');
+        stepLine.textContent = `${aIdx + 1}. ${act}`;
+        stepsBox.appendChild(stepLine);
       });
+      body.appendChild(stepsBox);
+
+      const moreId = `more_details_${item.id || idx}`;
+      const moreBtn = document.createElement('button');
+      moreBtn.className = 'btn';
+      moreBtn.style.textAlign = 'left';
+      moreBtn.textContent = t.moreDetailsBtn;
+      moreBtn.addEventListener('click', () => toggleElement(moreId));
+      body.appendChild(moreBtn);
+
+      const moreDiv = document.createElement('div');
+      moreDiv.id = moreId;
+      moreDiv.className = 'hidden';
+      moreDiv.style.background = '#080d1a';
+      moreDiv.style.padding = '10px 12px';
+      moreDiv.style.borderRadius = '10px';
+      moreDiv.style.fontFamily = 'monospace';
+      moreDiv.style.fontSize = '13px';
+      moreDiv.style.color = '#94a3b8';
+      moreDiv.style.whiteSpace = 'pre-wrap';
+
+      const detailLines = [
+        `Source: ${item.source || ''} (${item.timestamp || ''})`,
+        `Score: ${score}/100 — ${a.confidence_score_explanation || ''}`,
+        `Checked text: ${item.input || ''}`,
+        ...(a.indicators || []).map(i => `• [${i.severity}] ${i.indicator_type}: ${i.target_element} — ${i.explanation}`)
+      ];
+      moreDiv.textContent = detailLines.join('\n');
+      body.appendChild(moreDiv);
+
+      const actRow = document.createElement('div');
+      actRow.style.display = 'flex';
+      actRow.style.flexWrap = 'wrap';
+      actRow.style.gap = '8px';
+
+      const askB = document.createElement('button');
+      askB.className = 'btn btn-indigo';
+      askB.textContent = t.chatTitle;
+      askB.addEventListener('click', () => sendChatMessage(`Is this safe? ${item.input || ''}`));
+
+      const safeB = document.createElement('button');
+      safeB.className = 'btn btn-green';
+      safeB.textContent = t.safeBtn;
+      safeB.addEventListener('click', () => sendFeedback(item.id, item.input, h.domain, 'false_positive'));
+
+      const scamB = document.createElement('button');
+      scamB.className = 'btn';
+      scamB.textContent = t.scamBtn;
+      scamB.addEventListener('click', () => sendFeedback(item.id, item.input, h.domain, 'confirm_scam'));
+
+      const repB = document.createElement('button');
+      repB.className = 'btn btn-red';
+      repB.style.marginLeft = 'auto';
+      repB.textContent = t.reportBtn;
+      repB.addEventListener('click', () => copyAndReport(idx));
+
+      actRow.appendChild(askB);
+      actRow.appendChild(safeB);
+      actRow.appendChild(scamB);
+      actRow.appendChild(repB);
+      body.appendChild(actRow);
+
+      card.appendChild(body);
+      return card;
     }
 
     async function pollFeed() {
@@ -296,90 +1042,63 @@
         const res = await fetch('/api/feed');
         const d = await res.json();
         isPaused = !!d.paused;
-        document.getElementById('pauseBtn').innerText = isPaused ? "▶️ Resume Protection" : "⏸️ Pause Protection";
-        const badge = document.getElementById('statusBadge');
-        badge.innerText = isPaused ? "⏸️ Paused (Privacy Mode)" : "● Watching (Active)";
-        badge.className = isPaused
-          ? "bg-slate-800 border border-slate-600 text-slate-300 px-3 py-1.5 rounded-full text-xs font-bold"
-          : "bg-emerald-950 border border-emerald-500/50 text-emerald-400 px-3 py-1.5 rounded-full text-xs font-bold";
+        const t = i18n[currentLang];
+        document.getElementById('pauseBtn').textContent = isPaused
+          ? (currentLang === 'hi' ? "▶️ चालू करें" : "▶️ Resume")
+          : (currentLang === 'hi' ? "⏸️ रोकें" : "⏸️ Pause");
 
-        document.getElementById('queueCounter').innerText = `Queue: ${d.queue_pending || 0} pending`;
-        document.getElementById('statScannedVal').innerText = d.total_scanned || 0;
+        const badge = document.getElementById('statusBadge');
+        badge.textContent = isPaused
+          ? (currentLang === 'hi' ? "⏸️ रुका हुआ है" : "⏸️ Paused")
+          : (currentLang === 'hi' ? "🟢 चालू है" : "🟢 Watching");
+
+        document.getElementById('queueCounter').textContent = `${d.queue_pending || 0} waiting`;
+        document.getElementById('statScannedVal').textContent = d.total_scanned || 0;
         const items = d.items || [];
         window._latestItems = items;
-        document.getElementById('statBlockedVal').innerText = items.filter(i => i.analysis?.is_suspicious).length;
-        document.getElementById('statPagesVal').innerText = d.metrics?.browser_pages_scanned || 0;
-        document.getElementById('statDPVal').innerText = d.metrics?.dark_patterns_found || 0;
-        document.getElementById('statFPVal').innerText = d.metrics?.auto_fp_corrected || 0;
-        document.getElementById('statAccVal').innerText = `${d.accuracy_pct ?? 100}%`;
+        document.getElementById('statBlockedVal').textContent = items.filter(i => i.analysis?.is_suspicious).length;
+        document.getElementById('statPagesVal').textContent = d.metrics?.browser_pages_scanned || 0;
+        document.getElementById('statDPVal').textContent = d.metrics?.dark_patterns_found || 0;
+        document.getElementById('statFPVal').textContent = d.metrics?.auto_fp_corrected || 0;
+        document.getElementById('statAccVal').textContent = `${d.accuracy_pct ?? 100}%`;
 
         const hash = JSON.stringify(items.map(i => i.id + currentLang));
         if (hash === lastRenderedHash) return;
         lastRenderedHash = hash;
 
-        updateTimelineChart(items);
+        // Destroy all previous alert charts before rebuilding alert cards
+        destroyAllAlertCharts();
 
         const list = document.getElementById('feedList');
         if (!items.length) return;
+        list.textContent = '';
 
         const useHi = currentLang === 'hi';
-        list.innerHTML = items.map((item, idx) => {
-          const a = item.analysis || {};
-          const h = item.heuristics || {};
-          const risk = a.overall_risk_score || 'Low';
-          const score = a.numeric_risk_score ?? 0;
-          const malScore = a.malicious_score ?? h.malicious_score ?? score;
-          const dpScore = a.dark_pattern_score ?? h.dark_pattern_score ?? 0;
-          const border = risk === 'High' ? 'border-red-500' : (risk === 'Medium' ? 'border-amber-500' : 'border-emerald-600');
-          const pill = risk === 'High' ? 'bg-red-600' : (risk === 'Medium' ? 'bg-amber-600' : 'bg-emerald-600');
+        const maxAlertCharts = MAX_LIVE_CHARTS - 1;
 
-          const calm = useHi ? (a.calm_down_message_hi || a.calm_down_message) : a.calm_down_message;
-          const about = useHi ? (a.what_input_is_about_hi || a.what_input_is_about) : a.what_input_is_about;
-          const seems = useHi ? (a.what_it_seems_to_be_hi || a.what_it_seems_to_be) : a.what_it_seems_to_be;
-          const affects = useHi ? (a.how_it_affects_user_hi || a.how_it_affects_user) : a.how_it_affects_user;
-          const actions = (useHi ? (a.recommended_actions_hi?.length ? a.recommended_actions_hi : a.recommended_actions) : a.recommended_actions) || [];
+        items.forEach((item, idx) => {
+          const breakdown = item.analysis?.score_breakdown || [];
+          const allowChart = breakdown.length > 0 && idx < maxAlertCharts;
+          const canvasId = allowChart ? `alert_pie_canvas_${item.id || idx}` : '';
 
-          return `
-            <div class="bg-[#1E293B] border-l-4 ${border} p-4 rounded-xl space-y-2.5 shadow">
-              <div class="flex justify-between items-center gap-2">
-                <span class="${pill} text-white text-xs font-extrabold px-2.5 py-0.5 rounded-full">
-                  ${escapeHtml(risk.toUpperCase())} (${score}/100) — ${escapeHtml(a.fraud_category)}
-                </span>
-                <span class="text-[11px] text-slate-400">${escapeHtml(item.source)} • ${escapeHtml(item.timestamp)}</span>
-              </div>
-              <div class="text-sm font-bold text-sky-300">${escapeHtml(calm)}</div>
-              <div class="bg-[#0F172A] p-3 rounded-lg text-xs space-y-1.5 border border-slate-800">
-                <div><b class="text-sky-400">📌 About:</b> ${escapeHtml(about)}</div>
-                <div><b class="text-amber-400">🎭 Seems To Be:</b> ${escapeHtml(seems)}</div>
-                <div><b class="text-rose-400">💥 Impact:</b> ${escapeHtml(affects)}</div>
-                <div class="text-slate-400"><b>Redacted Input:</b> ${escapeHtml(item.input)}</div>
-                <div class="text-purple-300"><b>Malicious Score:</b> ${malScore}/100 | <b>Dark Pattern Score:</b> ${dpScore}/100 | <b>Combined:</b> ${score}/100</div>
-              </div>
-              <ul class="text-xs text-emerald-300 space-y-0.5">
-                ${actions.map(act => `<li>✔ ${escapeHtml(act)}</li>`).join('')}
-              </ul>
-              <div class="flex flex-wrap gap-2 pt-1">
-                <button onclick="sendFeedback('${escapeHtml(item.id)}', '${escapeHtml(item.input)}', '${escapeHtml(h.domain || '')}', 'false_positive')"
-                  class="bg-emerald-900/70 hover:bg-emerald-800 text-emerald-200 text-[11px] font-bold px-3 py-1 rounded-lg">
-                  ✅ This Was Safe
-                </button>
-                <button onclick="sendFeedback('${escapeHtml(item.id)}', '${escapeHtml(item.input)}', '${escapeHtml(h.domain || '')}', 'confirm_scam')"
-                  class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold px-3 py-1 rounded-lg">
-                  🚨 Confirm Scam
-                </button>
-                <button onclick="copyAndReport(${idx})"
-                  class="bg-red-900/80 hover:bg-red-800 text-red-100 text-[11px] font-bold px-3 py-1 rounded-lg ml-auto">
-                  📞 Copy Report &amp; Open 1930 Portal
-                </button>
-              </div>
-            </div>
-          `;
-        }).join('');
-      } catch (e) {}
+          const cardEl = buildAlertCardDOM(item, idx, t, useHi, canvasId);
+          list.appendChild(cardEl);
+
+          if (allowChart && canvasId) {
+            const score = Number(item.analysis?.numeric_risk_score ?? 0);
+            const labels = breakdown.map(s => useHi ? (s.label_hi || s.label_en) : s.label_en);
+            const dataPts = breakdown.map(s => Number(s.points || 0));
+            const cols = breakdown.map((s, sIdx) => s.key === 'nothing_suspicious' ? '#10B981' : PALETTE[sIdx % (PALETTE.length - 1)]);
+            upsertPieChart(canvasId, labels, dataPts, cols, `${score}/100`);
+          }
+        });
+      } catch (_) {}
     }
 
-    setInterval(pollFeed, 2000);
+    clearChat();
+    setInterval(() => { pollFeed(); pollDashboardBreakdown(); }, 2500);
     pollFeed();
+    pollDashboardBreakdown();
   </script>
 </body>
 </html>

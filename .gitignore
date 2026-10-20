@@ -1,0 +1,13 @@
+.env
+agent_memory.json
+settings.json
+*.log
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+dist/
+build/
+*.spec
+*.zip

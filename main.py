@@ -1,16 +1,4 @@
-"""FastAPI backend for TrustLens AI (Desktop + Browser Extension Guardian).
-
-Fixes included:
-- BUG 1: FastAPI dependency `verify_extension_token` applied to `/api/audit-page` and `/api/feedback`.
-  Returns HTTP 401 when `X-TrustLens-Token` header is missing and HTTP 403 when it is wrong,
-  using `secrets.compare_digest`. Token is initialized at startup via `secrets.token_urlsafe(32)`
-  and saved atomically in settings.json; never logged.
-- BUG 1 CORS: Allows only configured `chrome-extension://<id>` origins (from `TRUSTLENS_EXTENSION_ORIGINS`)
-  plus `http://127.0.0.1:8000` and `http://localhost:8000`, with NO wildcard.
-- BUG 3: System-only verdicts only increment scan/TP/TN counters and never alter heuristic weights
-  or blacklists; only explicit user feedback updates weights (idempotently +/-1, clamped) and blacklists.
-  Startup migration cleans any poisoned memory entries.
-"""
+"""FastAPI backend for TrustLens AI (with /api/chat, /api/tts, /api/stats/breakdown, and 10/min chat rate limit)."""
 from __future__ import annotations
 
 import asyncio
@@ -37,12 +25,14 @@ import uvicorn
 
 from ai_auditor import (
     AIUnavailableError,
+    ChatRequest,
     PhishingAuditResult,
     apply_user_feedback,
     audit_blueprint_with_ai,
     audit_image_with_ai,
     audit_webpage_with_ai,
     build_offline_heuristic_result,
+    chat_with_trustlens_ai,
     downscale_and_validate_image,
     load_memory,
     migrate_and_clean_memory_on_startup,
@@ -57,6 +47,7 @@ from collectors import (
 )
 from heuristics import evaluate_heuristics, is_local_or_private_host, scrub_pii
 from page_analysis import PageAuditRequest, evaluate_page_signals, strip_url_query_and_fragment
+from voice_assistant import OfflineSpeaker, VOICE_STACK_AVAILABLE, get_voice_availability_message
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 log = logging.getLogger("trustlens.api")
@@ -67,8 +58,17 @@ MAX_PAGE_AUDIT_BODY_BYTES = 64 * 1024
 MIN_AI_CALL_INTERVAL_S = 1.2
 ITEM_AUDIT_TIMEOUT_S = 25.0
 
-# Load and cache token at module initialization (and refresh on startup)
 _STARTUP_TOKEN: str = get_extension_token()
+speaker = OfflineSpeaker()
+
+DASHBOARD_BREAKDOWN_CATEGORIES: tuple[tuple[str, str, str], ...] = (
+    ("fake_links", "Fake website links", "नकली वेबसाइट लिंक"),
+    ("fake_refunds", "Fake refunds or collect requests", "पिन मांगने वाले नकली रिफंड"),
+    ("otp_or_password", "OTP or password requests", "OTP या पासवर्ड मांगने वाले मैसेज"),
+    ("urgent_money", "Urgent money or bill scares", "तुरंत पैसे या बिल का डर"),
+    ("page_tricks", "Webpage tricks", "वेबपेज की चालें"),
+    ("safe_items", "Safe items", "सुरक्षित चीजें"),
+)
 
 
 def get_active_token() -> str:
@@ -82,24 +82,55 @@ def get_active_token() -> str:
 async def verify_extension_token(
     x_trustlens_token: str | None = Header(default=None, alias="X-TrustLens-Token"),
 ) -> str:
-    """
-    FastAPI dependency enforcing shared-secret authentication:
-    - Returns HTTP 401 when X-TrustLens-Token header is missing or empty.
-    - Returns HTTP 403 when X-TrustLens-Token does not match via secrets.compare_digest.
-    """
+    """Enforces X-TrustLens-Token header (401 when missing, 403 when wrong) via secrets.compare_digest."""
     if x_trustlens_token is None or not x_trustlens_token.strip():
-        raise HTTPException(
-            status_code=401,
-            detail="Missing X-TrustLens-Token header.",
-        )
+        raise HTTPException(status_code=401, detail="Missing X-TrustLens-Token header.")
     expected = get_active_token()
     supplied = x_trustlens_token.strip()
     if not expected or not secrets.compare_digest(supplied, expected):
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid X-TrustLens-Token header.",
-        )
+        raise HTTPException(status_code=403, detail="Invalid X-TrustLens-Token header.")
     return supplied
+
+
+def classify_item_for_dashboard_breakdown(record: dict[str, Any]) -> str:
+    analysis = record.get("analysis") or {}
+    if not analysis.get("is_suspicious") or analysis.get("overall_risk_score") == "Low":
+        return "safe_items"
+
+    slice_keys = {str(s.get("key", "")) for s in (analysis.get("score_breakdown") or [])}
+    cat_low = str(analysis.get("fraud_category", "")).lower()
+
+    if "fake_refund_trap" in slice_keys or "refund" in cat_low or "collect" in cat_low:
+        return "fake_refunds"
+    if (
+        slice_keys & {"asks_for_otp", "cross_site_login", "call_forward_code"}
+        or "otp" in cat_low
+        or "password" in cat_low
+        or "*401*" in cat_low
+    ):
+        return "otp_or_password"
+    if (
+        slice_keys
+        & {
+            "fake_countdown",
+            "pre_ticked_addon",
+            "guilt_no_button",
+            "unfair_choice_buttons",
+            "hidden_button_trap",
+            "copy_or_close_block",
+            "clickfix_keys",
+            "fake_virus_alert",
+        }
+        or int(analysis.get("dark_pattern_score", 0) or 0) > int(analysis.get("malicious_score", 0) or 0)
+    ):
+        return "page_tricks"
+    if (
+        slice_keys & {"fake_website_name", "known_scam_link", "strange_link_ending", "unsafe_connection", "number_only_link", "fake_link_text"}
+        or "link" in cat_low
+        or "website" in cat_low
+    ):
+        return "fake_links"
+    return "urgent_money"
 
 
 class AuditRequest(BaseModel):
@@ -122,9 +153,17 @@ class SettingsUpdateRequest(BaseModel):
     monitor_clipboard_text: bool | None = None
     monitor_screenshots: bool | None = None
     start_with_windows: bool | None = None
+    voice_enabled: bool | None = None
+    auto_read_high_risk: bool | None = None
     language: str | None = None
     paused: bool | None = None
     pause_minutes: int = 0
+
+
+class TTSRequest(BaseModel):
+    action: str = Field(..., pattern="^(speak|stop)$")
+    text: str = Field("", max_length=1000)
+    language: str = Field("en", pattern="^(en|hi)$")
 
 
 class URLSafetyRequest(BaseModel):
@@ -132,8 +171,6 @@ class URLSafetyRequest(BaseModel):
 
 
 class OriginRateLimiter:
-    """Bounded per-origin sliding-window rate limiter (max 60 requests / 60s per origin)."""
-
     def __init__(self, max_requests: int = 60, window_seconds: float = 60.0) -> None:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
@@ -156,15 +193,18 @@ class OriginRateLimiter:
             bucket.append(now)
             return True
 
+    def reset(self) -> None:
+        with self._lock:
+            self._buckets.clear()
+
 
 class BoundedState:
-    """Thread-safe container for the incoming queue, judged feed, and deduplication cache."""
-
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.incoming_queue: deque[dict[str, Any]] = deque(maxlen=150)
         self.judged_feed: deque[dict[str, Any]] = deque(maxlen=100)
         self.recent_results: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.category_counts: dict[str, int] = {k: 0 for k, _, _ in DASHBOARD_BREAKDOWN_CATEGORIES}
         self.last_ai_call_ts: float = 0.0
         self.total_scanned: int = 0
         self.alert_listeners: list[Callable[[dict[str, Any]], None]] = []
@@ -179,8 +219,10 @@ class BoundedState:
 
     def record_judged(self, cache_key: str, record: dict[str, Any]) -> None:
         callbacks: list[Callable[[dict[str, Any]], None]] = []
+        cat_key = classify_item_for_dashboard_breakdown(record)
         with self.lock:
             self.total_scanned += 1
+            self.category_counts[cat_key] = min(1_000_000, self.category_counts.get(cat_key, 0) + 1)
             self.judged_feed.appendleft(record)
             self.recent_results[cache_key] = record
             while len(self.recent_results) > 500:
@@ -196,9 +238,46 @@ class BoundedState:
         with self.lock:
             return self.recent_results.get(cache_key)
 
+    def get_last_5_redacted_summaries(self, lang: str = "en") -> list[dict[str, Any]]:
+        """Returns ONLY the last 5 judged items' redacted summary (verdict_line, category, score, plain explanation)."""
+        use_hi = lang == "hi"
+        with self.lock:
+            recent = list(self.judged_feed)[:5]
+        summaries: list[dict[str, Any]] = []
+        for rec in recent:
+            a = rec.get("analysis") or {}
+            summaries.append({
+                "verdict_line": str((a.get("verdict_line_hi") if use_hi else a.get("verdict_line")) or ""),
+                "category": str(a.get("fraud_category", "")),
+                "score": int(a.get("numeric_risk_score", 0) or 0),
+                "explanation": str((a.get("what_it_seems_to_be_hi") if use_hi else a.get("what_it_seems_to_be")) or "")[:160],
+            })
+        return summaries
+
+    def get_dashboard_breakdown(self) -> list[dict[str, Any]]:
+        with self.lock:
+            feed_snapshot = list(self.judged_feed)
+            counts_snapshot = dict(self.category_counts)
+
+        if sum(counts_snapshot.values()) == 0 and feed_snapshot:
+            for rec in feed_snapshot:
+                ck = classify_item_for_dashboard_breakdown(rec)
+                counts_snapshot[ck] = counts_snapshot.get(ck, 0) + 1
+
+        out: list[dict[str, Any]] = []
+        for key, label_en, label_hi in DASHBOARD_BREAKDOWN_CATEGORIES:
+            out.append({
+                "key": key,
+                "label_en": label_en,
+                "label_hi": label_hi,
+                "count": int(counts_snapshot.get(key, 0)),
+            })
+        return out
+
 
 state = BoundedState()
-rate_limiter = OriginRateLimiter()
+rate_limiter = OriginRateLimiter(max_requests=60, window_seconds=60.0)
+chat_rate_limiter = OriginRateLimiter(max_requests=10, window_seconds=60.0)
 collector_manager: CollectorManager | None = None
 _worker_stop = threading.Event()
 
@@ -214,10 +293,6 @@ def _hash_key(data: str | bytes) -> str:
 
 
 def _record_system_metrics_only(heuristics: dict[str, Any], result: PhishingAuditResult) -> None:
-    """
-    Records telemetry counters (tp/tn/auto_fp_corrected/auto_fn_caught) without mutating
-    heuristic weights or blacklisting domains on system-only verdicts (BUG 3 Rule 2 & 3).
-    """
     p1_flagged = int(heuristics.get("pass1_naive_score", 0)) >= 31
     final_flagged = result.is_suspicious
 
@@ -229,17 +304,11 @@ def _record_system_metrics_only(heuristics: dict[str, Any], result: PhishingAudi
         if p1_flagged and not final_flagged:
             metrics["auto_fp_corrected"] = metrics.get("auto_fp_corrected", 0) + 1
             metrics["tn"] = metrics.get("tn", 0) + 1
-            result.auto_calibration_action = (
-                "🤖 AUTO-FP SUPPRESSED: Naive keyword pass flagged urgency/OTP terms, "
-                "but Contextual Judge verified safe intent."
-            )
+            result.auto_calibration_action = "Cleared safe alert automatically."
         elif not p1_flagged and final_flagged:
             metrics["auto_fn_caught"] = metrics.get("auto_fn_caught", 0) + 1
             metrics["tp"] = metrics.get("tp", 0) + 1
-            result.auto_calibration_action = (
-                f"🤖 AUTO-FN INTERCEPTED: Naive pass missed this ({heuristics.get('pass1_naive_score')}/100), "
-                f"but Contextual Judge caught '{result.fraud_category}' ({result.numeric_risk_score}/100)."
-            )
+            result.auto_calibration_action = "Caught hidden scam automatically."
         else:
             if final_flagged:
                 metrics["tp"] = metrics.get("tp", 0) + 1
@@ -301,11 +370,9 @@ async def perform_text_audit(text: str, source: str = "Manual Input", record_in_
 
 
 async def perform_page_audit(req: PageAuditRequest, record_in_feed: bool = True) -> dict[str, Any]:
-    """Audits a browser webpage's structural signals, merging deterministic rules with Gemini when needed."""
     host = req.hostname.lower().strip(".")
     if is_local_or_private_host(host):
         clean_url = strip_url_query_and_fragment(req.url)
-        # Skip blacklisting or alerting on localhost/127.0.0.1 unless it is an explicit demo test page with signals
         if not req.signals:
             safe_heur = evaluate_page_signals(req, load_memory())
             safe_res = build_offline_heuristic_result(safe_heur)
@@ -399,8 +466,6 @@ async def perform_image_audit(image_bytes: bytes, mime_type: str, source: str = 
 
     fallback_heuristics = evaluate_heuristics("", load_memory())
     fallback_heuristics["inconclusive"] = True
-    fallback_heuristics["what_input_is_about"] = f"Screenshot captured from {source}."
-    fallback_heuristics["what_input_is_about_hi"] = f"{source} से लिया गया स्क्रीनशॉट।"
 
     def _run_vision_sync() -> PhishingAuditResult:
         _respect_ai_rate_limit()
@@ -417,9 +482,10 @@ async def perform_image_audit(image_bytes: bytes, mime_type: str, source: str = 
         "domain": "",
         "pass1_naive_score": ai_res.numeric_risk_score,
         "base_score": ai_res.numeric_risk_score,
+        "score_breakdown": [s.model_dump() for s in ai_res.score_breakdown],
         "malicious_score": ai_res.malicious_score or ai_res.numeric_risk_score,
         "dark_pattern_score": ai_res.dark_pattern_score,
-        "impersonation_detected": "impersonat" in ai_res.fraud_category.lower() or "homoglyph" in ai_res.fraud_category.lower(),
+        "impersonation_detected": False,
     }
 
     payload: dict[str, Any] = {
@@ -471,12 +537,12 @@ async def lifespan(app: FastAPI):
     _worker_stop.set()
     if collector_manager is not None:
         collector_manager.stop()
+    speaker.shutdown()
     consumer_task.cancel()
 
 
 app = FastAPI(title="TrustLens AI — Ambient Desktop & Browser Guardian (CC6-AI05)", lifespan=lifespan)
 
-# BUG 1 CORS: Allow only configured chrome-extension://<id> origins plus localhost/127.0.0.1, with NO wildcard.
 _configured_ext_origins = [
     o.strip()
     for o in os.environ.get("TRUSTLENS_EXTENSION_ORIGINS", "").split(",")
@@ -512,6 +578,72 @@ app.add_middleware(
 )
 
 
+@app.get("/api/local-token")
+async def get_local_dashboard_token(request: Request) -> dict[str, str]:
+    origin = (request.headers.get("origin") or "").strip()
+    if origin and origin not in ("http://127.0.0.1:8000", "http://localhost:8000"):
+        raise HTTPException(status_code=403, detail="Forbidden origin.")
+    return {"token": get_active_token()}
+
+
+@app.post("/api/chat")
+async def api_chat(
+    req: ChatRequest,
+    request: Request,
+    _token: str = Depends(verify_extension_token),
+) -> dict[str, Any]:
+    """
+    Token-protected 'Ask TrustLens' chatbot endpoint.
+    - Rate limited to 10 messages per minute.
+    - Redacts PII/OTPs before cloud calls, runs deterministic heuristics first,
+      and never leaks the API key or extension token.
+    """
+    client_key = f"chat_{request.client.host if request.client else 'local'}"
+    if not chat_rate_limiter.allow(client_key):
+        raise HTTPException(status_code=429, detail="Too many chat messages. Please wait a minute.")
+
+    recent_summaries = state.get_last_5_redacted_summaries(req.language)
+    res = await asyncio.to_thread(chat_with_trustlens_ai, req, recent_summaries)
+    return res.model_dump()
+
+
+@app.post("/api/tts")
+async def api_tts(
+    req: TTSRequest,
+    _token: str = Depends(verify_extension_token),
+) -> dict[str, Any]:
+    """Triggers or stops offline Windows SAPI speech via pyttsx3 on a worker thread."""
+    if req.action == "stop":
+        speaker.stop()
+        return {"status": "stopped"}
+    info = speaker.speak(req.text, req.language)
+    return info
+
+
+@app.get("/api/stats/breakdown")
+async def api_stats_breakdown(
+    _token: str = Depends(verify_extension_token),
+) -> dict[str, Any]:
+    mem = load_memory()
+    metrics = mem.get("metrics", {})
+    categories = state.get_dashboard_breakdown()
+    total_categorized = sum(c["count"] for c in categories)
+    return {
+        "status": "ok",
+        "total_scanned": state.total_scanned,
+        "total_categorized": total_categorized,
+        "categories": categories,
+        "metrics": {
+            "tp": int(metrics.get("tp", 0)),
+            "tn": int(metrics.get("tn", 0)),
+            "fp": int(metrics.get("fp", 0)),
+            "fn": int(metrics.get("fn", 0)),
+            "browser_pages_scanned": int(metrics.get("browser_pages_scanned", 0)),
+            "dark_patterns_found": int(metrics.get("dark_patterns_found", 0)),
+        },
+    }
+
+
 @app.get("/health")
 async def get_health() -> dict[str, Any]:
     mem = load_memory()
@@ -528,6 +660,8 @@ async def get_health() -> dict[str, Any]:
     return {
         "status": "ok",
         "paused": collector_manager.paused if collector_manager else False,
+        "voice_available": VOICE_STACK_AVAILABLE,
+        "voice_message": get_voice_availability_message(settings.get("language", "en")),
         "settings": public_settings,
         "total_scanned": state.total_scanned,
         "queue_pending": len(state.incoming_queue),
@@ -545,7 +679,6 @@ async def api_audit_page(
     request: Request,
     _token: str = Depends(verify_extension_token),
 ) -> dict[str, Any]:
-    """Audits privacy-safe structural signals sent by the TrustLens Chrome/Edge extension (requires X-TrustLens-Token)."""
     raw_body = await request.body()
     if len(raw_body) > MAX_PAGE_AUDIT_BODY_BYTES:
         raise HTTPException(status_code=413, detail="Request payload exceeds 64 KB limit.")
@@ -612,7 +745,6 @@ async def api_submit_feedback(
     req: FeedbackRequest,
     _token: str = Depends(verify_extension_token),
 ) -> dict[str, Any]:
-    """Updates memory, blacklists, user_allowlist, and bounded weights from explicit user feedback (requires X-TrustLens-Token)."""
     updated = apply_user_feedback(
         domain=req.domain,
         feedback_type=req.feedback_type,
@@ -632,13 +764,24 @@ async def api_submit_feedback(
 @app.post("/api/settings")
 async def api_update_settings(req: SettingsUpdateRequest) -> dict[str, Any]:
     updates: dict[str, Any] = {}
-    for field_name in ("consent_given", "monitor_notifications", "monitor_clipboard_text", "monitor_screenshots", "start_with_windows", "language"):
+    for field_name in (
+        "consent_given",
+        "monitor_notifications",
+        "monitor_clipboard_text",
+        "monitor_screenshots",
+        "start_with_windows",
+        "voice_enabled",
+        "auto_read_high_risk",
+        "language",
+    ):
         val = getattr(req, field_name)
         if val is not None:
             updates[field_name] = val
     if updates:
         save_settings(updates)
     if req.paused is not None and collector_manager is not None:
+        if req.paused:
+            speaker.stop()
         collector_manager.set_paused(req.paused, duration_seconds=req.pause_minutes * 60)
     public_settings = {k: v for k, v in load_settings().items() if k != "extension_token"}
     return {"status": "success", "settings": public_settings, "paused": collector_manager.paused if collector_manager else False}
@@ -762,6 +905,14 @@ async def serve_clean_demo() -> Any:
     if os.path.exists(demo_path):
         return FileResponse(demo_path)
     raise HTTPException(status_code=404, detail="demo/clean_demo.html not found.")
+
+
+@app.get("/vendor/chart.umd.js")
+async def serve_vendored_chart_js() -> Any:
+    vendor_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "vendor", "chart.umd.js")
+    if os.path.exists(vendor_path):
+        return FileResponse(vendor_path, media_type="application/javascript")
+    raise HTTPException(status_code=404, detail="static/vendor/chart.umd.js not found.")
 
 
 @app.get("/")

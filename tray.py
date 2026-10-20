@@ -1,4 +1,4 @@
-"""System tray controller and native Windows Toast alert dispatcher for TrustLens AI."""
+"""System tray controller for TrustLens AI (with Voice Push-to-Talk & Auto-Read toggles)."""
 from __future__ import annotations
 
 import logging
@@ -13,6 +13,7 @@ import pyperclip
 import pystray
 
 from collectors import get_extension_token, load_settings, save_settings
+from voice_assistant import VOICE_STACK_AVAILABLE, get_voice_availability_message
 
 log = logging.getLogger("trustlens.tray")
 
@@ -103,17 +104,19 @@ def send_high_risk_windows_toast(title: str, message: str, dashboard_url: str) -
 
 
 class TrayManager:
-    """Manages the pystray system tray icon and menu options, including Copy Extension Token."""
+    """Manages the pystray system tray icon and menu options, including Voice Push-to-Talk switch."""
 
     def __init__(
         self,
         dashboard_url: str,
         on_open_alerts: Callable[[], None],
+        on_open_chat: Callable[[], None],
         on_pause_change: Callable[[bool, int], None],
         on_quit: Callable[[], None],
     ) -> None:
         self.dashboard_url = dashboard_url
         self.on_open_alerts = on_open_alerts
+        self.on_open_chat = on_open_chat
         self.on_pause_change = on_pause_change
         self.on_quit = on_quit
         self.state_color = "green"
@@ -122,9 +125,26 @@ class TrayManager:
         self.icon: pystray.Icon | None = None
 
     def start_in_thread(self) -> None:
+        voice_label = (
+            "Voice Push-to-Talk (Hold Ctrl+Alt+T)"
+            if VOICE_STACK_AVAILABLE
+            else "Voice Push-to-Talk (Packages not installed)"
+        )
         menu = pystray.Menu(
             pystray.MenuItem("Open Dashboard", self._open_dashboard, default=True),
             pystray.MenuItem("Recent Alerts / Explanation Card", lambda icon, item: self.on_open_alerts()),
+            pystray.MenuItem("Ask TrustLens (Chat Helper)", lambda icon, item: self.on_open_chat()),
+            pystray.MenuItem(
+                voice_label,
+                self._toggle_voice,
+                checked=lambda item: bool(load_settings().get("voice_enabled", False)) and VOICE_STACK_AVAILABLE,
+                enabled=VOICE_STACK_AVAILABLE,
+            ),
+            pystray.MenuItem(
+                "Auto-Read High-Risk Alerts Aloud",
+                self._toggle_auto_read,
+                checked=lambda item: bool(load_settings().get("auto_read_high_risk", False)),
+            ),
             pystray.MenuItem("Copy Extension Token", self._copy_extension_token),
             pystray.MenuItem("Pause Protection for 15 Min", self._pause_15m),
             pystray.MenuItem(
@@ -149,6 +169,21 @@ class TrayManager:
             menu,
         )
         threading.Thread(target=self.icon.run, name="TrustLensTray", daemon=True).start()
+
+    def _toggle_voice(self, icon: Any, item: Any) -> None:
+        if not VOICE_STACK_AVAILABLE:
+            send_high_risk_windows_toast("TrustLens Voice", get_voice_availability_message("en"), self.dashboard_url)
+            return
+        curr = bool(load_settings().get("voice_enabled", False))
+        save_settings({"voice_enabled": not curr})
+        if self.icon is not None:
+            self.icon.update_menu()
+
+    def _toggle_auto_read(self, icon: Any, item: Any) -> None:
+        curr = bool(load_settings().get("auto_read_high_risk", False))
+        save_settings({"auto_read_high_risk": not curr})
+        if self.icon is not None:
+            self.icon.update_menu()
 
     def _copy_extension_token(self, icon: Any, item: Any) -> None:
         tok = get_extension_token()

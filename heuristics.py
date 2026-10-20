@@ -1,12 +1,9 @@
-"""Deterministic local heuristics engine for TrustLens AI.
+"""Deterministic local heuristics engine, plain-language validator, and score_breakdown builder for TrustLens AI.
 
-Fixes included:
-- Standard login/password wording ('Enter your password', 'Student Login') is NOT a threat by itself;
-  credential-demand scoring applies ONLY when combined with explicit urgency/threat wording,
-  direct reply demands ('reply with', 'share your'), or a suspicious/lookalike domain.
-- Validates public registered domains strictly (rejects localhost, 127.0.0.1, private IPs, and free text).
-- Supports user_allowlist overrides and caps blacklist floor at 80 with evidence-only explanations.
-- Uses only fixed-width look-behinds in regular expressions.
+All user-facing text and chart slice labels follow strict plain-language rules:
+- Reading level: age 10. Short words. Sentences of 12 words or fewer.
+- Zero banned technical jargon on the main card or chart labels.
+- Everyday spoken Hindi / Hinglish for all _hi fields.
 """
 from __future__ import annotations
 
@@ -22,17 +19,77 @@ log = logging.getLogger("trustlens.heuristics")
 
 TRUSTLENS_INTERNAL_MARKER = "[TL_INTERNAL]"
 
-INTERNAL_SIGNATURE_SUBSTRINGS: tuple[str, ...] = (
-    TRUSTLENS_INTERNAL_MARKER.lower(),
-    "trustlens ai",
-    "trustlens:",
-    "=== trustlens",
-    "trustlens cybercrime",
-    "calm-down reality check",
-    "what it seems to be",
-    "malicious webpage / phishing risk",
-    "verified clean webpage",
+BANNED_WORDS: tuple[str, ...] = (
+    "phishing",
+    "homoglyph",
+    "typosquat",
+    "typosquatting",
+    "credential",
+    "credentials",
+    "harvesting",
+    "impersonation",
+    "impersonating",
+    "malicious",
+    "heuristic",
+    "heuristics",
+    "obfuscation",
+    "obfuscated",
+    "dom",
+    "domain",
+    "domains",
+    "url",
+    "urls",
+    "spoofing",
+    "spoofed",
+    "vishing",
+    "social engineering",
+    "indicator",
+    "indicators",
+    "payload",
+    "payloads",
+    "script",
+    "scripts",
+    "overlay",
+    "overlays",
+    "clickjacking",
+    "dark pattern",
+    "dark patterns",
+    "hacked",
+    "danger!!!",
 )
+
+# Plain-language labels for score_breakdown pie chart slices (EN & HI, passes simple_text_check)
+PLAIN_SLICE_LABELS: dict[str, tuple[str, str]] = {
+    "nothing_suspicious": ("Nothing suspicious found", "कुछ भी गलत नहीं मिला"),
+    "other_small_things": ("Other small things", "अन्य छोटी बातें"),
+    "fake_website_name": ("Fake website name", "नकली वेबसाइट का नाम"),
+    "known_scam_link": ("Known scam link", "जानी-मानी नकली लिंक"),
+    "strange_link_ending": ("Strange link ending", "अजीब अंत वाला लिंक"),
+    "unsafe_connection": ("Link without safety lock", "बिना सुरक्षा लॉक का लिंक"),
+    "number_only_link": ("Link made of numbers", "सिर्फ नंबरों वाला लिंक"),
+    "hidden_short_link": ("Short link hiding address", "पता छुपाने वाला छोटा लिंक"),
+    "confusing_long_link": ("Long confusing link name", "लंबा और उलझाने वाला नाम"),
+    "mixed_foreign_letters": ("Tricky look-alike letters", "धोखा देने वाले मिलते-जुलते अक्षर"),
+    "asks_for_otp": ("Asks for your OTP or password", "आपका OTP या पासवर्ड मांगना"),
+    "fake_refund_trap": ("Fake refund asking for PIN", "पिन मांगने वाला नकली रिफंड"),
+    "power_cutoff_scare": ("Fake power cutoff scare", "बिजली काटने का झूठा डर"),
+    "fake_job_bonus": ("Fake daily job payout", "रोज़ कमाई का झूठा लालच"),
+    "family_trouble_scare": ("Fake family emergency", "परिवार पर मुसीबत का झूठा डर"),
+    "call_forward_code": ("Trick code *401* for calls", "कॉल चुराने वाला *401* कोड"),
+    "vague_click_bait": ("Rushing you with missing details", "अधूरी बात बताकर क्लिक कराना"),
+    "cross_site_login": ("Login box sending password away", "पासवर्ड बाहर भेजने वाला बॉक्स"),
+    "hidden_button_trap": ("Hidden button on top of page", "पेज के ऊपर छुपा हुआ बटन"),
+    "fake_link_text": ("Link going to wrong place", "गलत जगह ले जाने वाला लिंक"),
+    "sneaky_download": ("Automatic file download", "अपने आप फाइल डाउनलोड होना"),
+    "copy_or_close_block": ("Blocking copy or page close", "कॉपी करने या बंद करने से रोकना"),
+    "unasked_popup": ("Asking permission without click", "बिना पूछे अनुमति मांगना"),
+    "clickfix_keys": ("Asking to press keys on PC", "कीबोर्ड पर बटन दबाने की चाल"),
+    "fake_virus_alert": ("Fake computer virus warning", "कंप्यूटर में वायरस की झूठी चेतावनी"),
+    "fake_countdown": ("Fake countdown clock", "नकली उल्टी गिनती की घड़ी"),
+    "pre_ticked_addon": ("Extra cost box already ticked", "पहले से टिक किया एक्स्ट्रा चार्ज"),
+    "guilt_no_button": ("Rude words on the No button", "मना करने वाले बटन पर दबाव"),
+    "unfair_choice_buttons": ("Huge accept button trick", "बहुत बड़ा हाँ बटन दिखाने की चाल"),
+}
 
 PROTECTED_BRANDS: dict[str, tuple[str, ...]] = {
     "amazon": ("amazon.com", "amazon.in", "amzn.in", "amzn.to", "media-amazon.com"),
@@ -152,6 +209,452 @@ EXPLICIT_URGENCY_PATTERNS: tuple[str, ...] = (
     "avoid suspension",
 )
 
+PLAIN_SIGNAL_TEMPLATES: dict[str, dict[str, Any]] = {
+    "lookalike_website": {
+        "verdict_en": "🛑 This is a scam",
+        "verdict_hi": "🛑 यह एक धोखा है",
+        "calm_en": "Stay calm. Nothing bad has happened yet.",
+        "calm_hi": "शांत रहें। अभी कुछ भी गलत नहीं हुआ है।",
+        "about_en": "What this is: A fake website address spelled wrong on purpose.",
+        "about_hi": "यह क्या है: जानबूझकर गलत स्पेलिंग वाला एक नकली वेबसाइट पता।",
+        "seems_en": "What it pretends to be: A real company website you trust.",
+        "seems_hi": "यह क्या दिखता है: आपकी जानी-पहचानी असली कंपनी की वेबसाइट।",
+        "affects_en": "What could happen to you: They can steal your password and money.",
+        "affects_hi": "आप पर क्या असर होगा: वे आपका पासवर्ड और पैसे चुरा सकते हैं।",
+        "explain_en": "The website name is spelled wrong to trick you.",
+        "explain_hi": "आपको धोखा देने के लिए वेबसाइट का नाम गलत लिखा गया है।",
+        "actions_en": [
+            "Do not open this link.",
+            "Type the real website address yourself.",
+            "Close this message now.",
+        ],
+        "actions_hi": [
+            "इस लिंक को न खोलें।",
+            "असली वेबसाइट का नाम खुद टाइप करें।",
+            "इस मैसेज को अभी बंद कर दें।",
+        ],
+    },
+    "known_bad_link": {
+        "verdict_en": "🛑 This is a scam",
+        "verdict_hi": "🛑 यह एक धोखा है",
+        "calm_en": "Stay calm. You are safe if you do not click.",
+        "calm_hi": "शांत रहें। अगर आप क्लिक नहीं करते हैं तो आप सुरक्षित हैं।",
+        "about_en": "What this is: A link from our known scam list.",
+        "about_hi": "यह क्या है: हमारी नकली वेबसाइटों की लिस्ट में शामिल एक लिंक।",
+        "seems_en": "What it pretends to be: A normal service or bank page.",
+        "seems_hi": "यह क्या दिखता है: एक सामान्य बैंक या सेवा का पेज।",
+        "affects_en": "What could happen to you: Opening it can steal your login details.",
+        "affects_hi": "आप पर क्या असर होगा: इसे खोलने से आपका पासवर्ड चोरी हो सकता है।",
+        "explain_en": "This website address is already on our known scam list.",
+        "explain_hi": "यह वेबसाइट पता पहले से हमारी धोखाधड़ी की लिस्ट में है।",
+        "actions_en": [
+            "Do not open this link.",
+            "Delete this message right away.",
+            "Open your real bank app instead.",
+        ],
+        "actions_hi": [
+            "इस लिंक को न खोलें।",
+            "इस मैसेज को तुरंत डिलीट करें।",
+            "इसकी जगह अपना असली बैंक ऐप खोलें।",
+        ],
+    },
+    "strange_link_ending": {
+        "verdict_en": "⚠️ Be careful",
+        "verdict_hi": "⚠️ सावधान रहें",
+        "calm_en": "Take a breath. Do not rush to click this link.",
+        "calm_hi": "शांत रहें। इस लिंक पर क्लिक करने की जल्दबाजी न करें।",
+        "about_en": "What this is: A web link with a strange ending.",
+        "about_hi": "यह क्या है: अजीब अंत वाला एक वेब लिंक।",
+        "seems_en": "What it pretends to be: An official notice or update link.",
+        "seems_hi": "यह क्या दिखता है: एक सरकारी या कंपनी का असली लिंक।",
+        "affects_en": "What could happen to you: Cheap fake links often steal your details.",
+        "affects_hi": "आप पर क्या असर होगा: ऐसे सस्ते नकली लिंक आपकी जानकारी चुराते हैं।",
+        "explain_en": "Real banks and big shops do not use strange link endings.",
+        "explain_hi": "असली बैंक और बड़ी कंपनियां ऐसे अजीब लिंक का इस्तेमाल नहीं करतीं।",
+        "actions_en": [
+            "Do not click this link.",
+            "Check your official app directly.",
+        ],
+        "actions_hi": [
+            "इस लिंक पर क्लिक न करें।",
+            "सीधे अपने असली ऐप में जाकर जांच करें।",
+        ],
+    },
+    "asks_for_otp": {
+        "verdict_en": "🛑 This is a scam",
+        "verdict_hi": "🛑 यह एक धोखा है",
+        "calm_en": "Stay calm. Your account is safe if you do not reply.",
+        "calm_hi": "शांत रहें। जवाब न देने पर आपका बैंक खाता सुरक्षित है।",
+        "about_en": "What this is: A message asking for your password or OTP.",
+        "about_hi": "यह क्या है: आपका पासवर्ड या OTP मांगने वाला एक नकली मैसेज।",
+        "seems_en": "What it pretends to be: An urgent bank security alert.",
+        "seems_hi": "यह क्या दिखता है: बैंक की तरफ से आया एक जरूरी अलर्ट।",
+        "affects_en": "What could happen to you: Sharing your OTP lets them take your money.",
+        "affects_hi": "आप पर क्या असर होगा: OTP बताने से वे आपके पैसे निकाल सकते हैं।",
+        "explain_en": "It is rushing you to share your OTP or password.",
+        "explain_hi": "यह डराकर आपसे आपका OTP या पासवर्ड मांग रहा है।",
+        "actions_en": [
+            "Do not reply to this message.",
+            "Never share your OTP or password.",
+            "Call your bank on the number on your card.",
+        ],
+        "actions_hi": [
+            "इस मैसेज का जवाब न दें।",
+            "अपना OTP या पासवर्ड किसी को न बताएं।",
+            "अपने बैंक कार्ड पर लिखे नंबर पर कॉल करें।",
+        ],
+    },
+    "fake_refund_request": {
+        "verdict_en": "🛑 This is a scam",
+        "verdict_hi": "🛑 यह एक धोखा है",
+        "calm_en": "Stay calm. Do not enter your UPI PIN.",
+        "calm_hi": "शांत रहें। अपना UPI पिन बिल्कुल न डालें।",
+        "about_en": "What this is: A payment request dressed up as a refund.",
+        "about_hi": "यह क्या है: रिफंड के नाम पर पैसे मांगने वाला एक धोखा।",
+        "seems_en": "What it pretends to be: Money coming into your bank account.",
+        "seems_hi": "यह क्या दिखता है: जैसे आपके बैंक खाते में पैसे आ रहे हैं।",
+        "affects_en": "What could happen to you: Entering your PIN takes money from your account.",
+        "affects_hi": "आप पर क्या असर होगा: पिन डालते ही आपके खाते से पैसे कट जाएंगे।",
+        "explain_en": "You never need to enter a PIN to receive money.",
+        "explain_hi": "पैसे पाने के लिए कभी भी UPI पिन नहीं डालना पड़ता।",
+        "actions_en": [
+            "Tap Decline on this request now.",
+            "Do not enter your UPI PIN.",
+            "Block the person who sent this.",
+        ],
+        "actions_hi": [
+            "इस रिक्वेस्ट को तुरंत Decline करें।",
+            "अपना UPI पिन बिल्कुल न डालें।",
+            "भेजने वाले नंबर को ब्लॉक करें।",
+        ],
+    },
+    "electricity_cutoff_scam": {
+        "verdict_en": "🛑 This is a scam",
+        "verdict_hi": "🛑 यह एक धोखा है",
+        "calm_en": "Stay calm. Your electricity will not be cut tonight.",
+        "calm_hi": "शांत रहें। आज रात आपकी बिजली नहीं कटेगी।",
+        "about_en": "What this is: A fake warning about your electricity bill.",
+        "about_hi": "यह क्या है: बिजली बिल के नाम पर डराने वाला नकली मैसेज।",
+        "seems_en": "What it pretends to be: A final cutoff notice from the power office.",
+        "seems_hi": "यह क्या दिखता है: बिजली विभाग से आया आखिरी नोटिस।",
+        "affects_en": "What could happen to you: Calling them or clicking lets them steal money.",
+        "affects_hi": "आप पर क्या असर होगा: कॉल करने या लिंक खोलने से पैसे चोरी हो सकते हैं।",
+        "explain_en": "Power companies never cut electricity at night from personal phone numbers.",
+        "explain_hi": "बिजली कंपनी कभी भी निजी नंबर से मैसेज भेजकर रात में बिजली नहीं काटती।",
+        "actions_en": [
+            "Do not call the phone number in the message.",
+            "Do not click the link.",
+            "Check your bill in your real electricity app.",
+        ],
+        "actions_hi": [
+            "मैसेज में दिए गए नंबर पर कॉल न करें।",
+            "लिंक पर क्लिक न करें।",
+            "अपने असली बिजली ऐप में बिल चेक करें।",
+        ],
+    },
+    "fake_job_offer": {
+        "verdict_en": "🛑 This is a scam",
+        "verdict_hi": "🛑 यह एक धोखा है",
+        "calm_en": "Stay calm. Do not send them any money.",
+        "calm_hi": "शांत रहें। उन्हें एक भी रुपया न भेजें।",
+        "about_en": "What this is: A fake work-from-home job message.",
+        "about_hi": "यह क्या है: घर बैठे कमाई का लालच देने वाला नकली मैसेज।",
+        "seems_en": "What it pretends to be: An easy job paying thousands every day.",
+        "seems_hi": "यह क्या दिखता है: रोज़ हज़ारों दिलाने वाली एक आसान नौकरी।",
+        "affects_en": "What could happen to you: They pay a small bonus then steal your savings.",
+        "affects_hi": "आप पर क्या असर होगा: वे पहले छोटा बोनस देकर बाद में बड़ी रकम ठग लेंगे।",
+        "explain_en": "Real jobs never ask you to pay money to unlock tasks.",
+        "explain_hi": "असली नौकरी में काम पाने के लिए कभी पैसे जमा नहीं करने पड़ते।",
+        "actions_en": [
+            "Do not click the link.",
+            "Never pay money to get a job.",
+            "Block this sender.",
+        ],
+        "actions_hi": [
+            "इस लिंक पर क्लिक न करें।",
+            "काम पाने के लिए कभी पैसे न दें।",
+            "इस नंबर को ब्लॉक करें।",
+        ],
+    },
+    "family_emergency_scam": {
+        "verdict_en": "🛑 This is a scam",
+        "verdict_hi": "🛑 यह एक धोखा है",
+        "calm_en": "Stay calm. Call your family member first to check.",
+        "calm_hi": "शांत रहें। पहले अपने घरवाले को फोन करके सच जानें।",
+        "about_en": "What this is: A message claiming a relative is in trouble.",
+        "about_hi": "यह क्या है: किसी रिश्तेदार के मुसीबत में होने का दावा करता मैसेज।",
+        "seems_en": "What it pretends to be: Your family member texting from a new number.",
+        "seems_hi": "यह क्या दिखता है: नए नंबर से आपके किसी अपने का मैसेज।",
+        "affects_en": "What could happen to you: You might send money to a stranger in panic.",
+        "affects_hi": "आप पर क्या असर होगा: घबराहट में आप किसी ठग को पैसे भेज सकते हैं।",
+        "explain_en": "They want you to panic and send money without checking.",
+        "explain_hi": "वे चाहते हैं कि आप घबराकर बिना पूछे तुरंत पैसे भेज दें।",
+        "actions_en": [
+            "Do not send any money yet.",
+            "Call your relative on their old phone number.",
+            "Ask a question only the real person knows.",
+        ],
+        "actions_hi": [
+            "अभी बिल्कुल पैसे न भेजें।",
+            "अपने रिश्तेदार के पुराने असली नंबर पर कॉल करें।",
+            "उनसे कोई ऐसी बात पूछें जो सिर्फ वही जानते हों।",
+        ],
+    },
+    "call_forwarding_trap": {
+        "verdict_en": "🛑 This is a scam",
+        "verdict_hi": "🛑 यह एक धोखा है",
+        "calm_en": "Stay calm. Do not dial that code on your phone.",
+        "calm_hi": "शांत रहें। अपने फोन पर वह नंबर बिल्कुल डायल न करें।",
+        "about_en": "What this is: A trick code starting with *401*.",
+        "about_hi": "यह क्या है: *401* से शुरू होने वाला एक धोखेबाज कोड।",
+        "seems_en": "What it pretends to be: A code to cancel or track a parcel.",
+        "seems_hi": "यह क्या दिखता है: पार्सल कैंसिल या ट्रैक करने का कोड।",
+        "affects_en": "What could happen to you: It sends all your phone calls and OTPs to them.",
+        "affects_hi": "आप पर क्या असर होगा: इससे आपके सारे कॉल और OTP ठग के फोन पर जाएंगे।",
+        "explain_en": "Dialing *401* sends your bank calls to the scammer's phone.",
+        "explain_hi": "*401* डायल करने से आपके बैंक कॉल ठग के नंबर पर चले जाते हैं।",
+        "actions_en": [
+            "Do not dial *401* on your phone.",
+            "Dial ##002# now to stop any call forwarding.",
+            "Hang up the call immediately.",
+        ],
+        "actions_hi": [
+            "अपने फोन पर *401* कभी डायल न करें।",
+            "कॉल फॉरवर्डिंग बंद करने के लिए ##002# डायल करें।",
+            "कॉल तुरंत काट दें।",
+        ],
+    },
+    "vague_attention_bait": {
+        "verdict_en": "⚠️ Be careful",
+        "verdict_hi": "⚠️ सावधान रहें",
+        "calm_en": "Stay calm. Do not click the link out of curiosity.",
+        "calm_hi": "शांत रहें। उत्सुकता में आकर लिंक पर क्लिक न करें।",
+        "about_en": "What this is: A short message trying to grab your attention.",
+        "about_hi": "यह क्या है: आपका ध्यान खींचने वाला एक अधूरा मैसेज।",
+        "seems_en": "What it pretends to be: Big money or an urgent update for you.",
+        "seems_hi": "यह क्या दिखता है: आपके खाते में बड़ी रकम आने या जरूरी खबर का मैसेज।",
+        "affects_en": "What could happen to you: Clicking can take you to a fake page.",
+        "affects_hi": "आप पर क्या असर होगा: क्लिक करने से आप किसी नकली वेबसाइट पर फंस सकते हैं।",
+        "explain_en": "It makes a big claim with no real details to make you click.",
+        "explain_hi": "यह बिना किसी पक्के सबूत के बड़ा दावा करके आपको क्लिक करने के लिए उकसाता है।",
+        "actions_en": [
+            "Do not click the link.",
+            "Open your bank app yourself to check your balance.",
+            "Ignore and delete this message.",
+        ],
+        "actions_hi": [
+            "लिंक पर क्लिक न करें।",
+            "बैलेंस देखने के लिए खुद अपना बैंक ऐप खोलें।",
+            "इस मैसेज को अनदेखा करें और हटा दें।",
+        ],
+    },
+    "safe_bank_otp": {
+        "verdict_en": "✅ This looks safe",
+        "verdict_hi": "✅ यह सुरक्षित लगता है",
+        "calm_en": "Everything looks fine. Keep this OTP to yourself.",
+        "calm_hi": "सब ठीक है। यह OTP किसी और को न बताएं।",
+        "about_en": "What this is: A real one-time code from your bank.",
+        "about_hi": "यह क्या है: आपके बैंक से आया एक असली OTP कोड।",
+        "seems_en": "What it pretends to be: A normal login code with a safety reminder.",
+        "seems_hi": "यह क्या दिखता है: सुरक्षा चेतावनी के साथ आया सामान्य लॉगिन कोड।",
+        "affects_en": "What could happen to you: Nothing bad if you keep this code private.",
+        "affects_hi": "आप पर क्या असर होगा: जब तक आप यह कोड किसी को नहीं बताते, आप सुरक्षित हैं।",
+        "explain_en": "It has no fake links and reminds you not to share the code.",
+        "explain_hi": "इसमें कोई नकली लिंक नहीं है और यह कोड न बताने की सलाह देता है।",
+        "actions_en": [
+            "Enter the code only if you are logging in right now.",
+            "Never read this OTP to anyone on a call.",
+        ],
+        "actions_hi": [
+            "अगर आप खुद लॉगिन कर रहे हैं तभी यह कोड डालें।",
+            "फोन कॉल पर किसी को भी यह OTP न बताएं।",
+        ],
+    },
+    "safe_upi_receipt": {
+        "verdict_en": "✅ This looks safe",
+        "verdict_hi": "✅ यह सुरक्षित लगता है",
+        "calm_en": "Everything looks fine. This is just a payment receipt.",
+        "calm_hi": "सब ठीक है। यह सिर्फ आपके पेमेंट की रसीद है।",
+        "about_en": "What this is: A receipt for a payment that is already done.",
+        "about_hi": "यह क्या है: पूरे हो चुके पेमेंट की एक सामान्य रसीद।",
+        "seems_en": "What it pretends to be: A normal payment message from your bank.",
+        "seems_hi": "यह क्या दिखता है: बैंक से आया पेमेंट पूरा होने का मैसेज।",
+        "affects_en": "What could happen to you: Nothing bad. It does not ask for a PIN.",
+        "affects_hi": "आप पर क्या असर होगा: कोई खतरा नहीं है। यह आपसे पिन नहीं मांगता।",
+        "explain_en": "It only shows a past payment and asks for nothing.",
+        "explain_hi": "यह सिर्फ पुराने पेमेंट की जानकारी दे रहा है और कुछ मांग नहीं रहा।",
+        "actions_en": [
+            "No action needed.",
+            "Check your bank app if you do not recognize the payment.",
+        ],
+        "actions_hi": [
+            "कुछ करने की जरूरत नहीं है।",
+            "अगर पेमेंट आपने नहीं किया तो अपने बैंक ऐप में चेक करें।",
+        ],
+    },
+    "safe_general": {
+        "verdict_en": "✅ This looks safe",
+        "verdict_hi": "✅ यह सुरक्षित लगता है",
+        "calm_en": "Stay calm. Nothing bad was found here.",
+        "calm_hi": "शांत रहें। यहाँ कोई गलत बात नहीं मिली।",
+        "about_en": "What this is: A normal message or trusted website address.",
+        "about_hi": "यह क्या है: एक सामान्य मैसेज या भरोसेमंद वेबसाइट पता।",
+        "seems_en": "What it pretends to be: Normal everyday information.",
+        "seems_hi": "यह क्या दिखता है: रोज़मर्रा की सामान्य जानकारी।",
+        "affects_en": "What could happen to you: It does not ask for your password or money.",
+        "affects_hi": "आप पर क्या असर होगा: यह आपसे पासवर्ड या पैसे नहीं मांगता है।",
+        "explain_en": "No scam tricks were found in this text.",
+        "explain_hi": "इस मैसेज में कोई धोखाधड़ी वाली बात नहीं मिली।",
+        "actions_en": [
+            "You can continue normally.",
+            "Never share your OTP or password with anyone.",
+        ],
+        "actions_hi": [
+            "आप सामान्य रूप से आगे बढ़ सकते हैं।",
+            "अपना OTP या पासवर्ड कभी किसी को न बताएं।",
+        ],
+    },
+}
+
+
+def build_normalized_score_breakdown(
+    raw_slices: list[dict[str, Any]],
+    final_score: int,
+) -> list[dict[str, Any]]:
+    """
+    Builds a mathematically honest score_breakdown list where:
+    - Zero signals or final_score == 0 returns one slice: 'Nothing suspicious found' (0 points).
+    - Non-zero final_score normalizes slice points if they exceed final_score, or appends
+      'Other small things' if final_score exceeds the sum of slices, so sum(points) == final_score.
+    """
+    target = max(0, min(100, int(final_score)))
+    merged_by_key: dict[str, dict[str, Any]] = {}
+    for item in raw_slices:
+        pts = int(item.get("points", 0) or 0)
+        if pts <= 0:
+            continue
+        k = str(item.get("key") or "other_small_things")
+        lbl_en, lbl_hi = PLAIN_SLICE_LABELS.get(
+            k,
+            (
+                str(item.get("label_en") or "Other small things"),
+                str(item.get("label_hi") or "अन्य छोटी बातें"),
+            ),
+        )
+        sev = str(item.get("severity") or ("High" if pts >= 45 else "Medium"))
+        if k in merged_by_key:
+            merged_by_key[k]["points"] += pts
+        else:
+            merged_by_key[k] = {
+                "key": k,
+                "label_en": lbl_en,
+                "label_hi": lbl_hi,
+                "points": pts,
+                "severity": sev,
+            }
+
+    slices = list(merged_by_key.values())
+    if target == 0 or not slices:
+        if target > 0 and not slices:
+            lbl_en, lbl_hi = PLAIN_SLICE_LABELS["other_small_things"]
+            return [
+                {
+                    "key": "other_small_things",
+                    "label_en": lbl_en,
+                    "label_hi": lbl_hi,
+                    "points": target,
+                    "severity": "High" if target >= 66 else "Medium",
+                }
+            ]
+        lbl_en, lbl_hi = PLAIN_SLICE_LABELS["nothing_suspicious"]
+        return [
+            {
+                "key": "nothing_suspicious",
+                "label_en": lbl_en,
+                "label_hi": lbl_hi,
+                "points": 0,
+                "severity": "Low",
+            }
+        ]
+
+    total_raw = sum(s["points"] for s in slices)
+    if total_raw > target:
+        # Scale proportionally so sum equals target
+        scaled: list[dict[str, Any]] = []
+        running = 0
+        for idx, s in enumerate(slices):
+            if idx == len(slices) - 1:
+                new_pts = max(1, target - running)
+            else:
+                new_pts = max(1, int(round((s["points"] / total_raw) * target)))
+                if running + new_pts > target - (len(slices) - 1 - idx):
+                    new_pts = max(1, target - (len(slices) - 1 - idx) - running)
+            running += new_pts
+            s_copy = dict(s)
+            s_copy["points"] = new_pts
+            scaled.append(s_copy)
+        # Adjust last slice if rounding drifted by 1
+        diff = target - sum(x["points"] for x in scaled)
+        if diff != 0 and scaled:
+            scaled[-1]["points"] = max(1, scaled[-1]["points"] + diff)
+        return scaled
+
+    if total_raw < target:
+        rem = target - total_raw
+        lbl_en, lbl_hi = PLAIN_SLICE_LABELS["other_small_things"]
+        slices.append(
+            {
+                "key": "other_small_things",
+                "label_en": lbl_en,
+                "label_hi": lbl_hi,
+                "points": rem,
+                "severity": "Medium" if rem >= 20 else "Low",
+            }
+        )
+    return slices
+
+
+def default_verdict_line(overall_risk_score: str, lang: str = "en") -> str:
+    lvl = str(overall_risk_score or "Low").strip().lower()
+    if lang == "hi":
+        if lvl.startswith("high"):
+            return "🛑 यह एक धोखा है"
+        if lvl.startswith("med"):
+            return "⚠️ सावधान रहें"
+        return "✅ यह सुरक्षित लगता है"
+    if lvl.startswith("high"):
+        return "🛑 This is a scam"
+    if lvl.startswith("med"):
+        return "⚠️ Be careful"
+    return "✅ This looks safe"
+
+
+def simple_text_check(text: str, lang: str = "en") -> tuple[bool, list[str]]:
+    if not text or not text.strip():
+        return True, []
+
+    violations: list[str] = []
+    low = text.lower()
+
+    for bw in BANNED_WORDS:
+        pattern = rf"\b{re.escape(bw)}\b" if bw.isalnum() else re.escape(bw)
+        if re.search(pattern, low):
+            violations.append(f"banned_word:{bw}")
+
+    allowed_caps = {"OTP", "PIN", "UPI", "SBI", "HDFC", "ICICI", "BSES", "PAN", "SIM", "ATM", "WFH", "VIP", "OLX", "SMS"}
+    for tok in re.findall(r"\b[A-Z]{4,}\b", text):
+        if tok not in allowed_caps:
+            violations.append(f"all_caps:{tok}")
+
+    sentences = [s.strip() for s in re.split(r"(?:\.(?!\d)|[!?।\n])+", text) if s.strip()]
+    for sent in sentences:
+        words = [w for w in sent.split() if re.search(r"[\w\u0900-\u097F]", w)]
+        if len(words) > 15:
+            violations.append(f"sentence_too_long:{len(words)}_words")
+
+    return len(violations) == 0, violations
+
+
 def is_trustlens_internal_text(text: str) -> bool:
     if not text:
         return False
@@ -165,7 +668,6 @@ def is_trustlens_internal_text(text: str) -> bool:
 
 
 def is_local_or_private_host(host: str) -> bool:
-    """Returns True if host is localhost, loopback, private IP, or link-local."""
     if not host:
         return True
     h = host.strip().lower().rstrip(".")
@@ -182,7 +684,6 @@ def is_local_or_private_host(host: str) -> bool:
 
 
 def normalize_valid_public_domain(raw: str | None) -> str | None:
-    """Validates and normalizes a registered domain, rejecting titles, sentences, localhost, and private IPs."""
     if not raw or not isinstance(raw, str):
         return None
     candidate = raw.strip()
@@ -206,7 +707,6 @@ def normalize_valid_public_domain(raw: str | None) -> str | None:
 
 
 def scrub_pii(text: str) -> str:
-    """Redacts emails, card/Aadhaar numbers, phone numbers, PANs, and OTP codes before cloud calls."""
     if not text:
         return ""
     cleaned = EMAIL_RE.sub("[REDACTED_EMAIL]", text)
@@ -327,7 +827,7 @@ def extract_first_url_or_domain(text: str) -> tuple[bool, bool, str, str, str]:
             if host:
                 return True, is_single, raw_url, host, p.scheme.lower()
         except ValueError:
-            log.debug("Malformed explicit URL skipped: %s", raw_url)
+            log.debug("Malformed explicit link skipped: %s", raw_url)
 
     text_without_emails = EMAIL_RE.sub(" ", candidate)
     m_bare = BARE_DOMAIN_RE.search(text_without_emails)
@@ -341,7 +841,7 @@ def extract_first_url_or_domain(text: str) -> tuple[bool, bool, str, str, str]:
             if host:
                 return True, is_single, full_url, host, "https"
         except ValueError:
-            log.debug("Malformed bare domain skipped: %s", raw_dom)
+            log.debug("Malformed bare link skipped: %s", raw_dom)
 
     return False, False, "", "", ""
 
@@ -373,11 +873,11 @@ def detect_brand_impersonation(host: str, extra_allowlist: list[str] | None = No
             official = PROTECTED_BRANDS[target_brand][0]
             is_ai = target_brand in ai_brands
             return {
-                "brand": target_brand.upper(),
+                "brand": target_brand,
                 "official": official,
                 "is_ai": is_ai,
-                "technique": "Impersonating AI Platform (Look-Alike Alias)" if is_ai else "Brand Impersonation (Look-Alike Alias)",
-                "explanation": f"Domain '{host_clean}' impersonates {target_brand.upper()} (official domain: {official}).",
+                "technique": "Fake AI Website Name" if is_ai else "Fake Brand Website Name",
+                "explanation": f"The website says {host_clean}, not {official}. It is fake.",
                 "score_boost": 94,
             }
 
@@ -385,29 +885,27 @@ def detect_brand_impersonation(host: str, extra_allowlist: list[str] | None = No
         brand_skel = _visual_skeleton(brand)
         brand_il = brand_skel.replace("l", "i")
         is_ai = brand in ai_brands
-        prefix = "Impersonating AI Platform" if is_ai else "Brand Impersonation"
+        prefix = "Fake AI Website Name" if is_ai else "Fake Brand Website Name"
 
         sub_tokens = re.split(r"[.-]", subdomain) if subdomain else []
         label_tokens = core_label.split("-")
         if clean_label == brand or brand in label_tokens or brand in sub_tokens:
             return {
-                "brand": brand.upper(),
+                "brand": brand,
                 "official": official_domains[0],
                 "is_ai": is_ai,
-                "technique": f"{prefix} (Combo-Squatting / Unauthorized Domain)",
-                "explanation": f"Domain '{host_clean}' uses protected name '{brand.upper()}' on an unverified host (official: {official_domains[0]}).",
+                "technique": prefix,
+                "explanation": f"It uses the name {brand} on a fake address ({host_clean}).",
                 "score_boost": 91,
             }
 
         if skel_label == brand_skel or il_unified == brand_il:
             return {
-                "brand": brand.upper(),
+                "brand": brand,
                 "official": official_domains[0],
-                "technique": f"{prefix} (Visual Homoglyph Substitution)",
-                "explanation": (
-                    f"Domain '{host_clean}' visually mimics '{brand.upper()}' ({official_domains[0]}) "
-                    "using look-alike characters (such as 'rn' for 'm', '0' for 'o', or '1'/'l' for 'i')."
-                ),
+                "is_ai": is_ai,
+                "technique": prefix,
+                "explanation": f"The website name is spelled wrong on purpose. It says {core_label}, not {brand}.",
                 "score_boost": 96,
             }
 
@@ -418,11 +916,11 @@ def detect_brand_impersonation(host: str, extra_allowlist: list[str] | None = No
                 dist_tok_skel = _levenshtein(tok_skel, brand_skel)
                 if tok_skel == brand_skel or (len(brand) >= 5 and min(dist_tok, dist_tok_skel) == 1):
                     return {
-                        "brand": brand.upper(),
+                        "brand": brand,
                         "official": official_domains[0],
                         "is_ai": is_ai,
-                        "technique": f"{prefix} (Typosquatted Combo Domain)",
-                        "explanation": f"Domain '{host_clean}' embeds a typosquatted variant ('{token}') of '{brand.upper()}' ({official_domains[0]}).",
+                        "technique": prefix,
+                        "explanation": f"The website name says {token} instead of {brand}. It is fake.",
                         "score_boost": 94,
                     }
 
@@ -434,21 +932,21 @@ def detect_brand_impersonation(host: str, extra_allowlist: list[str] | None = No
             ratio = difflib.SequenceMatcher(None, skel_label, brand_skel).ratio()
             if min_dist == 1 or (len(brand) >= 6 and min_dist <= 2 and ratio >= 0.75):
                 return {
-                    "brand": brand.upper(),
+                    "brand": brand,
                     "official": official_domains[0],
                     "is_ai": is_ai,
-                    "technique": f"{prefix} (Typosquatting Edit Distance {min_dist})",
-                    "explanation": f"Domain '{host_clean}' is a {min_dist}-character typosquat of '{brand.upper()}' ({official_domains[0]}).",
+                    "technique": prefix,
+                    "explanation": f"The website name is spelled wrong. It says {core_label}, not {brand}.",
                     "score_boost": 93,
                 }
 
     if is_punycode or is_mixed:
         return {
-            "brand": "Internationalized / Mixed-Script Host",
-            "official": "Verified ASCII Portal",
+            "brand": "trusted site",
+            "official": "real website",
             "is_ai": False,
-            "technique": "IDN Punycode / Mixed-Script Homograph",
-            "explanation": f"Hostname '{host_clean}' mixes Unicode scripts or uses punycode ('xn--') to spoof characters.",
+            "technique": "Look-Alike Foreign Letters",
+            "explanation": f"The website address {host_clean} uses look-alike letters to trick you.",
             "score_boost": 88,
         }
 
@@ -456,12 +954,11 @@ def detect_brand_impersonation(host: str, extra_allowlist: list[str] | None = No
 
 
 def has_explicit_urgency_or_threat(text_low: str) -> bool:
-    """Checks if text contains explicit account suspension, deadline, or threat language."""
     return any(pat in text_low for pat in EXPLICIT_URGENCY_PATTERNS)
 
 
 def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Runs complete local deterministic pre-analysis on text/URLs and returns structured signals."""
+    """Runs local pre-analysis on text/links and returns plain-language fields + score_breakdown."""
     memory = memory or {}
     weights = memory.get("weights", {})
     user_allowlist = [str(d).lower().strip() for d in memory.get("user_allowlist", []) if d]
@@ -473,6 +970,7 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
 
     raw_stripped = (text or "").strip()
     if not raw_stripped:
+        tpl = PLAIN_SIGNAL_TEMPLATES["safe_general"]
         return {
             "is_url": False,
             "has_url": False,
@@ -484,21 +982,25 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
             "inconclusive": False,
             "pass1_naive_score": 0,
             "base_score": 0,
-            "detected_category": "Empty Input",
+            "score_breakdown": build_normalized_score_breakdown([], 0),
+            "verdict_line": tpl["verdict_en"],
+            "verdict_line_hi": tpl["verdict_hi"],
+            "detected_category": "Empty Text",
             "dark_pattern": "None",
-            "calm_message": "No content to scan.",
-            "calm_message_hi": "स्कैन करने के लिए कोई सामग्री नहीं है।",
-            "what_input_is_about": "The submitted input was empty.",
-            "what_input_is_about_hi": "प्रस्तुत इनपुट खाली था।",
-            "what_it_seems_to_be": "Empty string.",
-            "what_it_seems_to_be_hi": "खाली टेक्स्ट।",
-            "how_it_affects_user": "No impact on the user.",
-            "how_it_affects_user_hi": "उपयोगकर्ता पर कोई प्रभाव नहीं।",
-            "confidence_score_explanation": "Scored 0/100 because the input is empty.",
-            "auto_calibration_note": "Skipped empty payload.",
+            "calm_message": tpl["calm_en"],
+            "calm_message_hi": tpl["calm_hi"],
+            "what_input_is_about": "What this is: An empty message.",
+            "what_input_is_about_hi": "यह क्या है: एक खाली मैसेज।",
+            "what_it_seems_to_be": "What it pretends to be: Nothing was written here.",
+            "what_it_seems_to_be_hi": "यह क्या दिखता है: यहाँ कुछ नहीं लिखा है।",
+            "how_it_affects_user": "What could happen to you: Nothing at all.",
+            "how_it_affects_user_hi": "आप पर क्या असर होगा: कुछ भी नहीं।",
+            "confidence_score_explanation": "Scored 0/100 because input was empty.",
+            "auto_calibration_note": "Skipped empty text.",
             "heuristic_indicators": [],
             "recommended_actions": ["No action needed."],
-            "recommended_actions_hi": ["किसी कार्रवाई की आवश्यकता नहीं है।"],
+            "recommended_actions_hi": ["कुछ करने की जरूरत नहीं है।"],
+            "primary_template_key": "safe_general",
         }
 
     candidate = raw_stripped[:20_000]
@@ -517,16 +1019,14 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
 
     score = 0
     indicators: list[dict[str, str]] = []
-    category = "General Digital Communication"
+    raw_slices: list[dict[str, Any]] = []
+    chosen_tpl_key = "safe_general"
+    category = "Normal Message"
     dark_pattern = "None"
-    calm_en = "✅ No manipulation or phishing trap detected."
-    calm_hi = "✅ कोई फ़िशिंग या धोखाधड़ी का जाल नहीं मिला।"
-    about_en = f"Text snippet ({len(candidate)} chars) inspected for fraud indicators."
-    about_hi = f"धोखाधड़ी संकेतों के लिए संदेश ({len(candidate)} अक्षर) की जांच की गई।"
-    seems_en = "Appears to be a standard informational or transactional message."
-    seems_hi = "यह एक सामान्य सूचनात्मक संदेश प्रतीत होता है।"
-    affects_en = "No suspicious links or credential traps detected."
-    affects_hi = "कोई संदिग्ध लिंक या पासवर्ड चुराने वाला जाल नहीं मिला।"
+    custom_about_en: str | None = None
+    custom_about_hi: str | None = None
+    custom_seems_en: str | None = None
+    custom_seems_hi: str | None = None
 
     has_url, is_url, url, host, scheme = extract_first_url_or_domain(candidate)
     whitelisted = False
@@ -535,9 +1035,6 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
     domain_risk_signal = False
 
     if has_url and host:
-        about_en = f"Input references domain '{host}'."
-        about_hi = f"इनपुट में डोमेन '{host}' का उल्लेख है।"
-
         if is_local_or_private_host(host):
             whitelisted = True
         else:
@@ -562,18 +1059,14 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
         if blacklisted:
             score = max(score, 80)
             domain_risk_signal = True
-            category = "Blacklisted Domain Match"
-            dark_pattern = "Threat Feed Match"
-            seems_en = f"References '{host}', which is listed in your local domain blacklist."
-            seems_hi = f"'{host}' का उल्लेख है, जो स्थानीय ब्लैकलिस्ट में शामिल है।"
-            affects_en = "Interacting with a blacklisted domain risks credential or financial theft."
-            affects_hi = "ब्लैकलिस्ट किए गए डोमेन का उपयोग करने से डेटा या पैसे चोरी होने का जोखिम है।"
-            calm_en = f"⚠️ Caution: '{host}' is on your local domain blacklist (floor score 80/100)."
-            calm_hi = f"⚠️ सावधान: '{host}' आपकी स्थानीय ब्लैकलिस्ट में है (स्कोर 80/100)।"
+            chosen_tpl_key = "known_bad_link"
+            category = "Known Scam Link"
+            dark_pattern = "Known Scam Website"
+            raw_slices.append({"key": "known_scam_link", "points": 80, "severity": "High"})
             indicators.append({
-                "type": "Blacklisted Domain",
+                "type": "Known Scam Link",
                 "target": host,
-                "explanation": f"Domain '{host}' matched local blacklist in agent_memory.json.",
+                "explanation": PLAIN_SIGNAL_TEMPLATES["known_bad_link"]["explain_en"],
                 "severity": "High",
             })
 
@@ -581,61 +1074,72 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
             if scheme == "http":
                 score += http_w
                 domain_risk_signal = True
+                if chosen_tpl_key == "safe_general":
+                    chosen_tpl_key = "strange_link_ending"
+                raw_slices.append({"key": "unsafe_connection", "points": http_w, "severity": "Medium"})
                 indicators.append({
-                    "type": "Insecure HTTP Protocol",
+                    "type": "Unsafe Web Link",
                     "target": url,
-                    "explanation": "Link uses unencrypted HTTP instead of HTTPS.",
+                    "explanation": "This link does not use a safe lock connection.",
                     "severity": "Medium",
                 })
             if host.endswith(SUSPICIOUS_TLDS):
                 score += tld_w
                 domain_risk_signal = True
-                seems_en = f"External link using a high-risk top-level domain ('{host}')."
-                seems_hi = f"उच्च जोखिम वाले डोमेन ('{host}') का उपयोग करने वाला लिंक।"
-                affects_en = "High-risk TLDs (.xyz, .top, .click) are frequently used for phishing sites."
-                affects_hi = "ऐसे डोमेन (.xyz, .top, .click) अक्सर फ़िशिंग वेबसाइटों के लिए उपयोग किए जाते हैं।"
+                if chosen_tpl_key == "safe_general":
+                    chosen_tpl_key = "strange_link_ending"
+                category = "Strange Web Link"
+                raw_slices.append({"key": "strange_link_ending", "points": tld_w, "severity": "High"})
                 indicators.append({
-                    "type": "Suspicious TLD",
+                    "type": "Strange Link Ending",
                     "target": host,
-                    "explanation": f"Domain '{host}' uses a high-risk top-level domain.",
+                    "explanation": PLAIN_SIGNAL_TEMPLATES["strange_link_ending"]["explain_en"],
                     "severity": "High",
                 })
             if is_ip_literal:
                 score = max(score, 85)
                 domain_risk_signal = True
-                category = "Raw IP-Address Host"
+                chosen_tpl_key = "known_bad_link"
+                category = "Number-Only Web Link"
+                raw_slices.append({"key": "number_only_link", "points": 85, "severity": "High"})
                 indicators.append({
-                    "type": "IP-Literal URL",
+                    "type": "Number-Only Link",
                     "target": host,
-                    "explanation": "Uses a raw IP address instead of a domain name.",
+                    "explanation": "This link uses raw numbers instead of a real company name.",
                     "severity": "High",
                 })
             if is_shortener:
                 score += 35
                 domain_risk_signal = True
+                if chosen_tpl_key == "safe_general":
+                    chosen_tpl_key = "strange_link_ending"
+                raw_slices.append({"key": "hidden_short_link", "points": 35, "severity": "Medium"})
                 indicators.append({
-                    "type": "URL Shortener",
+                    "type": "Hidden Short Link",
                     "target": host,
-                    "explanation": "Obscures the destination domain behind a shortener link.",
+                    "explanation": "This short link hides where it really takes you.",
                     "severity": "Medium",
                 })
             if excessive_subdomains:
                 score += 30
                 domain_risk_signal = True
+                raw_slices.append({"key": "confusing_long_link", "points": 30, "severity": "Medium"})
                 indicators.append({
-                    "type": "Excessive Subdomains",
+                    "type": "Long Confusing Web Address",
                     "target": host,
-                    "explanation": "Hostname chains 3 or more subdomains.",
+                    "explanation": "This link stacks many words to hide the real website name.",
                     "severity": "Medium",
                 })
             if is_mixed:
                 score = max(score, 88)
                 domain_risk_signal = True
-                category = "Mixed-Script / IDN Homograph"
+                chosen_tpl_key = "lookalike_website"
+                category = "Look-Alike Website Name"
+                raw_slices.append({"key": "mixed_foreign_letters", "points": 88, "severity": "High"})
                 indicators.append({
-                    "type": "Mixed-Script / Punycode Host",
+                    "type": "Look-Alike Letters",
                     "target": host,
-                    "explanation": "Hostname mixes Unicode scripts or uses punycode ('xn--').",
+                    "explanation": "The website name mixes foreign letters to trick your eyes.",
                     "severity": "High",
                 })
 
@@ -644,28 +1148,15 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
                 boost = max(int(impersonation_info["score_boost"]), spoof_w + 40)
                 score = max(score, boost)
                 domain_risk_signal = True
-                category = f"{impersonation_info['technique']} ({impersonation_info['brand']})"
-                dark_pattern = "Visual Homoglyph / Brand Spoofing"
-                about_en = f"Domain '{host}' closely resembles '{impersonation_info['brand']}'."
-                about_hi = f"डोमेन '{host}' लोकप्रिय सेवा '{impersonation_info['brand']}' जैसा दिखता है।"
-                seems_en = (
-                    f"Impersonates {impersonation_info['brand']} ({impersonation_info['official']}) "
-                    f"via {impersonation_info['technique']}."
-                )
-                seems_hi = (
-                    f"{impersonation_info['technique']} के माध्यम से {impersonation_info['brand']} "
-                    f"({impersonation_info['official']}) की नकल करता है।"
-                )
-                affects_en = f"Submitting credentials or payments on '{host}' exposes them to attackers."
-                affects_hi = f"'{host}' पर पासवर्ड या भुगतान दर्ज करने से डेटा चोरी हो सकता है।"
-                calm_en = (
-                    f"🛑 Impersonation Detected: '{host}' is not the official {impersonation_info['brand']} domain "
-                    f"('{impersonation_info['official']}')."
-                )
-                calm_hi = (
-                    f"🛑 नकली डोमेन चेतावनी: '{host}' आधिकारिक {impersonation_info['brand']} डोमेन "
-                    f"('{impersonation_info['official']}') नहीं है।"
-                )
+                chosen_tpl_key = "lookalike_website"
+                b_name = impersonation_info["brand"]
+                category = f"Fake {b_name.title()} Link"
+                dark_pattern = "Fake Website Name"
+                custom_about_en = f"What this is: The website says {host}, not {impersonation_info['official']}."
+                custom_about_hi = f"यह क्या है: वेबसाइट का नाम {host} लिखा है, {impersonation_info['official']} नहीं।"
+                custom_seems_en = f"What it pretends to be: The real {b_name.title()} website."
+                custom_seems_hi = f"यह क्या दिखता है: असली {b_name.title()} की वेबसाइट।"
+                raw_slices.append({"key": "fake_website_name", "points": boost, "severity": "High"})
                 indicators.append({
                     "type": impersonation_info["technique"],
                     "target": host,
@@ -677,11 +1168,13 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
         for word in candidate.split():
             if has_mixed_scripts(word):
                 score = max(score, 65)
-                category = "Mixed-Script Obfuscated Text"
+                chosen_tpl_key = "lookalike_website"
+                category = "Tricky Mixed Letters"
+                raw_slices.append({"key": "mixed_foreign_letters", "points": 65, "severity": "Medium"})
                 indicators.append({
-                    "type": "Mixed-Script Word Obfuscation",
+                    "type": "Mixed Alphabet Letters",
                     "target": word[:40],
-                    "explanation": "Word combines multiple Unicode scripts (e.g., Latin + Cyrillic).",
+                    "explanation": "This word mixes different alphabets to trick safety checks.",
                     "severity": "Medium",
                 })
                 break
@@ -695,18 +1188,12 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
             and not any(k in t_low for k in ["reply with", "send your", "share your otp with us"])
         ):
             is_verified_safe = True
-            score = 5
-            category = "Legitimate Bank OTP Security Alert"
+            score = 0
+            chosen_tpl_key = "safe_bank_otp"
+            category = "Real Bank OTP"
             dark_pattern = "None"
-            about_en = "One-Time Password (OTP) alert that warns you NOT to share the code."
-            about_hi = "वन-टाइम पासवर्ड (OTP) संदेश जो कोड साझा न करने की चेतावनी देता है।"
-            seems_en = "Genuine transactional security OTP from your bank or service."
-            seems_hi = "आपके बैंक या सेवा से वास्तविक सुरक्षा ओटीपी (OTP)।"
-            affects_en = "Safe as long as you initiated the transaction and keep the code private."
-            affects_hi = "जब तक आप कोड किसी के साथ साझा नहीं करते, यह सुरक्षित है।"
-            calm_en = "✅ Verified Safe: Genuine bank OTP alert. Keep this code private."
-            calm_hi = "✅ सुरक्षित: वास्तविक बैंक OTP संदेश। कोड निजी रखें।"
             indicators = []
+            raw_slices = []
 
         elif (
             ("paid ₹" in t_low or "paid rs" in t_low or "debited" in t_low)
@@ -715,37 +1202,22 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
         ):
             is_verified_safe = True
             score = 0
-            category = "Legitimate UPI Payment Receipt"
+            chosen_tpl_key = "safe_upi_receipt"
+            category = "Real UPI Receipt"
             dark_pattern = "None"
-            about_en = "Confirmation receipt for a completed UPI payment."
-            about_hi = "पूर्ण किए गए UPI भुगतान की पुष्टि रसीद।"
-            seems_en = "Standard post-transaction receipt."
-            seems_hi = "मानक लेनदेन रसीद।"
-            affects_en = "Informational receipt only; poses zero security risk."
-            affects_hi = "केवल जानकारी के लिए रसीद; कोई जोखिम नहीं।"
-            calm_en = "✅ Verified Safe: Standard UPI payment confirmation receipt."
-            calm_hi = "✅ सुरक्षित: मानक UPI भुगतान पुष्टि रसीद।"
             indicators = []
+            raw_slices = []
 
         elif whitelisted and is_url:
             is_verified_safe = True
             score = 0
-            category = "Verified Official Website"
+            chosen_tpl_key = "safe_general"
+            category = "Trusted Website"
             dark_pattern = "None"
-            about_en = f"Direct link to allow-listed domain '{host}'."
-            about_hi = f"सत्यापित डोमेन '{host}' का सीधा लिंक।"
-            seems_en = f"Trusted domain ('{host}')."
-            seems_hi = f"विश्वसनीय डोमेन ('{host}')।"
-            affects_en = "Safe to visit; matches known allow-list."
-            affects_hi = "विज़िट करने के लिए सुरक्षित।"
-            calm_en = f"✅ Verified Safe: '{host}' is an allow-listed domain."
-            calm_hi = f"✅ सुरक्षित: '{host}' एक विश्वसनीय डोमेन है।"
             indicators = []
+            raw_slices = []
 
     if not is_verified_safe:
-        # 1. Credential / OTP / PIN / CVV Harvesting:
-        # Requires explicit direct-reply extraction ('reply with', 'share your') OR explicit urgency/threat wording
-        # OR a flagged domain risk signal. Simply saying 'Enter your password' or 'Student Login' is NOT a risk indicator by itself.
         asks_secrets = any(k in t_low for k in ["password", "otp", "upi pin", "mpin", "cvv", "seed phrase", "api key", "secret key"])
         direct_reply_demand = any(
             k in t_low
@@ -755,130 +1227,91 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
 
         if asks_secrets and (direct_reply_demand or urgent_threat or domain_risk_signal):
             score = max(score, 96)
-            category = "Credential & OTP Harvesting Scam"
-            dark_pattern = "Direct Secret Extraction"
-            about_en = "Message demanding login credentials, passwords, PINs, or OTPs under urgency or via message reply."
-            about_hi = "दबाव दिखाकर या संदेश के जवाब में यूजरनेम, पासवर्ड, पिन या ओटीपी (OTP) मांगने वाला संदेश।"
-            seems_en = "Presents itself as an urgent account reactivation or verification alert."
-            seems_hi = "तत्काल खाता सत्यापन संदेश जैसा दिखता है।"
-            affects_en = "Sharing passwords or OTPs gives attackers full control over your account."
-            affects_hi = "पासवर्ड या ओटीपी साझा करने से ठग आपके खाते पर नियंत्रण पा सकते हैं।"
-            calm_en = "🚨 Do not reply with or enter your password, PIN, or OTP. Legitimate institutions never ask for secrets via message reply."
-            calm_hi = "🚨 अपना पासवर्ड, पिन या ओटीपी साझा न करें। असली संस्थाएं कभी संदेश में पासवर्ड नहीं मांगतीं।"
+            chosen_tpl_key = "asks_for_otp"
+            category = "Stealing Your OTP or Password"
+            dark_pattern = "Rushing You for Secrets"
+            raw_slices.append({"key": "asks_for_otp", "points": 70 if urgent_threat else 96, "severity": "High"})
+            if urgent_threat:
+                raw_slices.append({"key": "vague_click_bait", "points": urgency_w + 1, "severity": "Medium"})
             indicators.append({
-                "type": "Credential / OTP Harvesting Demand",
-                "target": "Password / OTP / PIN request with urgency or reply demand",
-                "explanation": "Requests confidential authentication secrets combined with urgency or direct-reply wording.",
+                "type": "Asks for OTP or Password",
+                "target": "OTP / Password Request",
+                "explanation": PLAIN_SIGNAL_TEMPLATES["asks_for_otp"]["explain_en"],
                 "severity": "High",
             })
 
-        # 2. UPI Collect Request Refund Trap
         if ("request" in t_low or "collect" in t_low or "pay ₹" in t_low or "pay rs" in t_low) and any(
             k in t_low for k in ["refund", "cashback", "receive", "upi pin", "enter pin", "olx"]
         ):
             score = max(score, collect_w + 46)
-            category = "UPI Collect-Request Reversal Scam"
-            dark_pattern = "Semantic Misdirection ('Refund' Note on Debit Button)"
-            about_en = "UPI collect request labeled as a 'Refund' or 'Cashback' asking you to tap 'Pay' and enter your UPI PIN."
-            about_hi = "UPI भुगतान अनुरोध जिसे 'रिफंड' बताया गया है और 'Pay' दबाकर पिन डालने को कहता है।"
-            seems_en = "Disguised as incoming refund money."
-            seems_hi = "खाते में पैसे आने का दिखावा करता है।"
-            affects_en = "Entering your UPI PIN on a collect request always deducts money from your bank account."
-            affects_hi = "UPI पिन डालने से हमेशा खाते से पैसे कटते हैं।"
-            calm_en = "🛑 You never need to enter a UPI PIN or tap 'Pay' to receive money. Decline this request."
-            calm_hi = "🛑 पैसे प्राप्त करने के लिए कभी भी UPI पिन डालने की आवश्यकता नहीं होती है।"
+            chosen_tpl_key = "fake_refund_request"
+            category = "Fake UPI Refund Trick"
+            dark_pattern = "Pay Button Dressed as Refund"
+            raw_slices.append({"key": "fake_refund_trap", "points": collect_w + 46, "severity": "High"})
             indicators.append({
-                "type": "UPI Collect Debit Trap",
-                "target": "Action 'Pay / Enter PIN' vs Note 'Refund/Cashback'",
-                "explanation": "Disguises an outgoing money collect request as an incoming refund.",
+                "type": "Fake UPI Refund Request",
+                "target": "Pay Button vs Refund Note",
+                "explanation": PLAIN_SIGNAL_TEMPLATES["fake_refund_request"]["explain_en"],
                 "severity": "High",
             })
 
-        # 3. Utility / Electricity Disconnection Scam
         if ("electricity" in t_low or "power" in t_low) and ("disconnect" in t_low or "tonight" in t_low or "9:30" in t_low):
             score = max(score, urgency_w + 68)
-            category = "Utility Disconnection Phishing Lure"
-            dark_pattern = "Artificial Night-Time Deadline"
-            about_en = "Message threatening electricity disconnection tonight unless you call a number or click a link."
-            about_hi = "आज रात बिजली काटने की धमकी देने वाला संदेश।"
-            seems_en = "Pretends to be an urgent notice from the electricity utility."
-            seems_hi = "बिजली विभाग की चेतावनी जैसा दिखता है।"
-            affects_en = "Pushes victims into calling scammers or paying on a fake billing portal."
-            affects_hi = "उपयोगकर्ता को नकली नंबर पर कॉल करने या नकली लिंक पर भुगतान करने के लिए फंसाता है।"
-            calm_en = "🧘 Your electricity is not getting disconnected tonight via personal mobile numbers or unverified links."
-            calm_hi = "🧘 आज रात निजी नंबरों या अनजान लिंक से आपकी बिजली नहीं कट रही है।"
+            chosen_tpl_key = "electricity_cutoff_scam"
+            category = "Fake Electricity Cutoff Scam"
+            dark_pattern = "Night Cutoff Scare"
+            raw_slices.append({"key": "power_cutoff_scare", "points": 68, "severity": "High"})
+            raw_slices.append({"key": "vague_click_bait", "points": urgency_w, "severity": "Medium"})
             indicators.append({
-                "type": "Utility Cutoff Threat",
-                "target": "Electricity disconnection tonight threat",
-                "explanation": "Uses a sudden night-time utility cutoff threat to pressure the user.",
+                "type": "Fake Power Cutoff Threat",
+                "target": "Tonight Electricity Cutoff",
+                "explanation": PLAIN_SIGNAL_TEMPLATES["electricity_cutoff_scam"]["explain_en"],
                 "severity": "High",
             })
 
-        # 4. Prepaid Task / Fake Job Scam
         if any(k in t_low for k in ["daily", "wfh", "part-time", "work from home"]) and any(
             k in t_low for k in ["rating", "youtube", "trial bonus", "₹3,000", "₹5,000", "instant bonus", "telegram"]
         ):
             score = max(score, 90)
-            category = "Prepaid Task / Fake Job Scam"
-            dark_pattern = "Micro-Reward Bait-and-Switch"
-            about_en = "Offer promising high daily payouts for simple online ratings or likes."
-            about_hi = "घर बैठे रेटिंग या लाइक करके रोज़ हज़ारों कमाने का प्रलोभन।"
-            seems_en = "Pretends to be an easy work-from-home job."
-            seems_hi = "आसान पार्ट-टाइम नौकरी जैसा दिखता है।"
-            affects_en = "Lures victims into depositing larger sums for 'prepaid VIP tasks' that are stolen."
-            affects_hi = "'VIP टास्क' के नाम पर बड़ी रकम जमा करवाकर ठग लेता है।"
-            calm_en = "💡 This matches a prepaid task scam pattern. Do not pay registration or task deposits."
-            calm_hi = "💡 यह प्रीपेड टास्क स्कैम है। कोई भी राशि जमा न करें।"
+            chosen_tpl_key = "fake_job_offer"
+            category = "Fake Work-From-Home Job"
+            dark_pattern = "Small Bonus Trap"
+            raw_slices.append({"key": "fake_job_bonus", "points": 90, "severity": "High"})
             indicators.append({
-                "type": "Task Scam Payout Lure",
-                "target": "High daily payout for simple ratings/likes",
-                "explanation": "Matches WhatsApp/Telegram prepaid task fraud pattern.",
+                "type": "Fake Daily Job Payout",
+                "target": "Daily Payout Promise",
+                "explanation": PLAIN_SIGNAL_TEMPLATES["fake_job_offer"]["explain_en"],
                 "severity": "High",
             })
 
-        # 5. Emotional Emergency Scam
         if any(k in t_low for k in ["met with accident", "hospital", "phone fell", "broken screen", "friend's number", "police station"]) and any(
             k in t_low for k in ["send money", "urgently", "upi", "rs", "₹", "transfer"]
         ):
             score = max(score, 88)
-            category = "Emotional Emergency Impersonation Scam"
-            dark_pattern = "Emotional Panic Manipulation"
-            about_en = "Message claiming a family/friend hospital or accident emergency and asking for immediate money."
-            about_hi = "दुर्घटना या अस्पताल की आपात स्थिति बताकर तुरंत पैसे मांगने वाला संदेश।"
-            seems_en = "Pretends to be a relative messaging from a new number."
-            seems_hi = "नए नंबर से किसी रिश्तेदार का संदेश प्रतीत होता है।"
-            affects_en = "Pressures you into transferring money before verifying with the person directly."
-            affects_hi = "बिना पुष्टि किए तुरंत पैसे ट्रांसफर करवाने की कोशिश करता है।"
-            calm_en = "🧘 Call your relative's known phone number directly to verify before sending money."
-            calm_hi = "🧘 पैसे भेजने से पहले अपने परिजन के असली नंबर पर कॉल करके पुष्टि करें।"
+            chosen_tpl_key = "family_emergency_scam"
+            category = "Fake Family Emergency"
+            dark_pattern = "Panic Money Request"
+            raw_slices.append({"key": "family_trouble_scare", "points": 88, "severity": "High"})
             indicators.append({
-                "type": "Emergency Pretext Money Demand",
-                "target": "Accident / Hospital + Immediate UPI Transfer",
-                "explanation": "Uses an emergency pretext to rush a money transfer.",
+                "type": "Fake Family Emergency",
+                "target": "Urgent Hospital Money Request",
+                "explanation": PLAIN_SIGNAL_TEMPLATES["family_emergency_scam"]["explain_en"],
                 "severity": "High",
             })
 
-        # 6. USSD Call Forwarding (*401*)
         if "*401*" in t_low:
             score = 99
-            category = "USSD Call-Forwarding OTP Interception Scam"
-            dark_pattern = "Carrier USSD Abuse"
-            about_en = "Instructions asking you to dial '*401*' followed by a phone number."
-            about_hi = "'*401*' के बाद फ़ोन नंबर डायल करने का निर्देश।"
-            seems_en = "Pretends to be a delivery cancellation or support code."
-            seems_hi = "पार्सल रद्दीकरण कोड जैसा दिखावा करता है।"
-            affects_en = "Dialing *401* forwards your incoming calls and voice OTPs to the scammer."
-            affects_hi = "*401* डायल करने से आपकी कॉल और ओटीपी ठग के फोन पर फॉरवर्ड हो जाते हैं।"
-            calm_en = "🚨 Do not dial *401*. If already dialed, dial ##002# to cancel call forwarding."
-            calm_hi = "🚨 *401* डायल न करें। कॉल फॉरवर्डिंग हटाने के लिए ##002# डायल करें।"
+            chosen_tpl_key = "call_forwarding_trap"
+            category = "*401* Call Forwarding Trick"
+            dark_pattern = "Phone Code Trick"
+            raw_slices.append({"key": "call_forward_code", "points": 99, "severity": "High"})
             indicators.append({
-                "type": "Malicious USSD Code (*401*)",
+                "type": "*401* Call Forwarding Code",
                 "target": "*401*",
-                "explanation": "Unconditional call-forwarding code disguised as a verification code.",
+                "explanation": PLAIN_SIGNAL_TEMPLATES["call_forwarding_trap"]["explain_en"],
                 "severity": "High",
             })
 
-        # 7. Vague Attention-Bait Lures ("5M credited to your account, click here")
         has_bait_hook = any(
             k in t_low
             for k in [
@@ -900,20 +1333,14 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
         if (has_bait_hook and (has_vague_cta or (has_url and not whitelisted))) and score < 85:
             vague_score = max(bait_w + 30, 86) if (has_bait_hook and has_vague_cta) else max(bait_w, 58)
             score = max(score, vague_score)
-            category = "Vague Attention-Bait / Curiosity Lure"
-            dark_pattern = "Information-Withholding Hook"
-            about_en = f"Vague message ('{scrub_pii(candidate)[:80]}') making a financial or urgent claim without verifiable details."
-            about_hi = f"बिना किसी विवरण के दावा करने वाला अस्पष्ट संदेश ('{scrub_pii(candidate)[:80]}')।"
-            seems_en = "Pretends to be a bank credit, reward payout, or urgent alert."
-            seems_hi = "बैंक क्रेडिट या इनाम की सूचना होने का दिखावा करता है।"
-            affects_en = "Lures you into clicking an unverified link to harvest credentials or install malware."
-            affects_hi = "असत्यापित लिंक पर क्लिक करने के लिए प्रेरित करता है।"
-            calm_en = "🧐 Doubt this message: Genuine services include verifiable account/reference details rather than vague 'click here' hooks."
-            calm_hi = "🧐 इस संदेश पर संदेह करें: असली सेवाएं बिना विवरण के ऐसे 'click here' संदेश नहीं भेजतीं।"
+            chosen_tpl_key = "vague_attention_bait"
+            category = "Vague Click Trap"
+            dark_pattern = "Missing Details Trick"
+            raw_slices.append({"key": "vague_click_bait", "points": vague_score, "severity": "High" if vague_score >= 66 else "Medium"})
             indicators.append({
-                "type": "Vague Attention-Bait Hook",
-                "target": scrub_pii(candidate)[:60],
-                "explanation": "Attention-grabbing claim combined with a call-to-action but zero verifiable details.",
+                "type": "Vague Attention Bait",
+                "target": scrub_pii(candidate)[:50],
+                "explanation": PLAIN_SIGNAL_TEMPLATES["vague_attention_bait"]["explain_en"],
                 "severity": "High" if score >= 66 else "Medium",
             })
 
@@ -921,19 +1348,10 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
     level_str = "High" if final_score >= 66 else "Medium" if final_score >= 31 else "Low"
     inconclusive = (final_score == 0 and not is_verified_safe and len(candidate) > 15)
 
-    if final_score >= 31:
-        detected_types = ", ".join(i["type"] for i in indicators[:3]) or category
-        actions_en = [
-            f"Do not interact with the flagged element(s): {detected_types}.",
-            "Verify independently through the official application or website.",
-        ]
-        actions_hi = [
-            f"चिह्नित तत्वों ({detected_types}) के साथ इंटरैक्ट न करें।",
-            "आधिकारिक ऐप या वेबसाइट के माध्यम से स्वतंत्र रूप से सत्यापित करें।",
-        ]
-    else:
-        actions_en = ["No risk indicators triggered. Standard security practices apply."]
-        actions_hi = ["कोई जोखिम संकेत नहीं मिला। सामान्य सुरक्षा अभ्यास बनाए रखें।"]
+    tpl = PLAIN_SIGNAL_TEMPLATES.get(chosen_tpl_key, PLAIN_SIGNAL_TEMPLATES["safe_general"])
+    verdict_en = default_verdict_line(level_str, "en")
+    verdict_hi = default_verdict_line(level_str, "hi")
+    breakdown = build_normalized_score_breakdown(raw_slices, final_score)
 
     return {
         "is_url": is_url,
@@ -947,22 +1365,25 @@ def evaluate_heuristics(text: str, memory: dict[str, Any] | None = None) -> dict
         "inconclusive": inconclusive,
         "pass1_naive_score": min(100, pass1_score),
         "base_score": final_score,
+        "score_breakdown": breakdown,
+        "verdict_line": verdict_en,
+        "verdict_line_hi": verdict_hi,
         "detected_category": category,
         "dark_pattern": dark_pattern,
-        "calm_message": calm_en,
-        "calm_message_hi": calm_hi,
-        "what_input_is_about": about_en,
-        "what_input_is_about_hi": about_hi,
-        "what_it_seems_to_be": seems_en,
-        "what_it_seems_to_be_hi": seems_hi,
-        "how_it_affects_user": affects_en,
-        "how_it_affects_user_hi": affects_hi,
+        "calm_message": tpl["calm_en"],
+        "calm_message_hi": tpl["calm_hi"],
+        "what_input_is_about": custom_about_en or tpl["about_en"],
+        "what_input_is_about_hi": custom_about_hi or tpl["about_hi"],
+        "what_it_seems_to_be": custom_seems_en or tpl["seems_en"],
+        "what_it_seems_to_be_hi": custom_seems_hi or tpl["seems_hi"],
+        "how_it_affects_user": tpl["affects_en"],
+        "how_it_affects_user_hi": tpl["affects_hi"],
         "confidence_score_explanation": (
-            f"Deterministic analysis scored {final_score}/100 ({level_str}) "
-            f"based on {len(indicators)} detected indicator(s)."
+            f"Score {final_score}/100 ({level_str}) from {len(indicators)} check(s)."
         ),
-        "auto_calibration_note": "Deterministic pre-analysis complete.",
+        "auto_calibration_note": "Local check complete.",
         "heuristic_indicators": indicators,
-        "recommended_actions": actions_en,
-        "recommended_actions_hi": actions_hi,
+        "recommended_actions": list(tpl["actions_en"]),
+        "recommended_actions_hi": list(tpl["actions_hi"]),
+        "primary_template_key": chosen_tpl_key,
     }

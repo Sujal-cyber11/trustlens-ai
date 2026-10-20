@@ -1,3 +1,4 @@
+# Core TrustLens AI Dependencies (Python 3.11 / 3.12 pre-built wheels available)
 fastapi==0.115.0
 uvicorn==0.30.6
 google-genai==0.3.0
@@ -13,3 +14,15 @@ python-multipart==0.0.12
 winotify==1.1.0 ; sys_platform == "win32"
 pytest==8.3.3
 httpx==0.27.2
+
+# Offline Read-Aloud & Push-to-Talk Voice Dependencies (Optional Install)
+# NOTE on Python 3.12 Wheels & Admin Rights:
+# - pyttsx3, sounddevice, numpy, and faster-whisper (via ctranslate2) install without admin rights.
+# - On some Windows Python 3.12 setups, faster-whisper / ctranslate2 or sounddevice PortAudio binaries
+#   may lack pre-built wheels on older pip versions (upgrade pip first: python -m pip install -U pip).
+# - TrustLens treats these packages as OPTIONAL: if any is missing, the app still starts normally
+#   with Voice greyed out and shows a plain-language message.
+pyttsx3==2.91
+numpy==1.26.4
+sounddevice==0.5.0
+faster-whisper==1.0.3
