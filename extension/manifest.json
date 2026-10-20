@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "TrustLens AI — Malicious Behaviour & Dark Pattern Guardian",
+  "version": "1.0.0",
+  "description": "Checks webpages in real time for credential-harvesting forms, homoglyphs, ClickFix traps, and manipulative dark patterns via your local TrustLens AI engine.",
+  "_permission_comments": {
+    "storage": "Stores extension token, 10-minute origin+path verdict cache, allow-list, paused sites, and per-check toggles in chrome.storage.local and chrome.storage.session.",
+    "tabs": "Reads tab URL/incognito status so chrome://, edge://, file://, and incognito tabs are skipped and toolbar icons match the active tab.",
+    "host_permissions": "Restricted strictly to http://127.0.0.1:8000/* so the extension never communicates with any third-party server."
+  },
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "TrustLens AI — Protected",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon_green_16.png",
+      "48": "icons/icon_green_48.png",
+      "128": "icons/icon_green_128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["banner.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page_hooks.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

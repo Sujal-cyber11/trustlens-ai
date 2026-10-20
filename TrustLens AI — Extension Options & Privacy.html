@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<!-- saved from url=(0064)chrome-extension://jakojklelgmhghmljednlbijaplknhma/options.html -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  
+  <title>TrustLens AI — Extension Options &amp; Privacy</title>
+  <style>
+    body {
+      background: #080d1a; color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 720px; margin: 30px auto; padding: 0 20px; line-height: 1.5;
+    }
+    h1 { color: #14b8a6; margin-bottom: 4px; }
+    .card {
+      background: #111827; border: 1px solid #1e293b; border-radius: 12px;
+      padding: 18px; margin-bottom: 18px;
+    }
+    label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+    input[type="text"], textarea {
+      width: 100%; box-sizing: border-box; background: #080d1a;
+      border: 1px solid #334155; color: #f8fafc; border-radius: 8px;
+      padding: 9px 12px; font-family: monospace; font-size: 12.5px;
+    }
+    .save-btn {
+      background: #0d9488; color: #ffffff; border: none; border-radius: 8px;
+      padding: 10px 22px; font-size: 13.5px; font-weight: 800; cursor: pointer;
+    }
+    .save-btn:hover { background: #0f766e; }
+    .status { margin-left: 12px; font-size: 13px; color: #34d399; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>🛡️ TrustLens AI — Browser Extension Settings</h1>
+  <p style="color:#94a3b8; font-size:13px;">
+    🔒 <b>First-Run Privacy Disclosure:</b> This extension never reads the value of any password or form input, strips URL query parameters, redacts PII locally, and communicates exclusively with your local TrustLens app at <code>http://127.0.0.1:8000</code>.
+  </p>
+
+  <div class="card">
+    <h3>1. Shared-Secret Extension Token &amp; Global Kill Switch</h3>
+    <p style="font-size:12px; color:#94a3b8;">
+      Right-click the TrustLens shield icon in your Windows system tray, click <b>"Copy Extension Token"</b>, and paste it below:
+    </p>
+    <input type="text" id="tokenInput" placeholder="Paste X-TrustLens-Token from tray menu...">
+    <label style="margin-top:12px;">
+      <input type="checkbox" id="globalKillSwitch"> ⏸️ Global Kill Switch (Pause all browser scanning everywhere)
+    </label>
+  </div>
+
+  <div class="card">
+    <h3>2. Per-Check Detection Toggles</h3>
+    <label><input type="checkbox" id="chkForms"> Detect Cross-Domain &amp; Insecure Password/OTP Forms</label>
+    <label><input type="checkbox" id="chkIframes"> Detect Hidden Cross-Origin Iframes &amp; Clickjacking Overlays</label>
+    <label><input type="checkbox" id="chkLinks"> Detect Deceptive Anchor Links (Text vs. Href Mismatch)</label>
+    <label><input type="checkbox" id="chkScripts"> Detect Script Obfuscation, Auto-Downloads &amp; Clipboard Hooks</label>
+    <label><input type="checkbox" id="chkClickFix"> Detect Fake Virus Dialogs &amp; ClickFix (Win+R) Traps</label>
+    <label><input type="checkbox" id="chkDarkPatterns"> Detect Dark Patterns (Fake Timers, Pre-checked Boxes, Confirm-Shaming, Asymmetric UI)</label>
+  </div>
+
+  <div class="card">
+    <h3>3. Never Scan These Sites (One domain per line — e.g. your trusted banking sites)</h3>
+    <textarea id="neverScanBox" rows="4" placeholder="onlinesbi.sbi
+hdfcbank.com"></textarea>
+  </div>
+
+  <div class="card">
+    <h3>4. Popular Domain Allow-List (One domain per line)</h3>
+    <textarea id="allowlistBox" rows="5"></textarea>
+  </div>
+
+  <button id="saveBtn" class="save-btn">💾 Save Extension Settings</button>
+  <span id="saveStatus" class="status"></span>
+
+  <script src="chrome-extension://jakojklelgmhghmljednlbijaplknhma/options.js"></script>
+
+</body></html>

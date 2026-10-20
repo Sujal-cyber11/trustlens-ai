@@ -5,17 +5,25 @@
     "gmap-task-bonus.top",
     "indiapost-parcel-verify.xyz",
     "hdfc-reward-points-redeem.click",
-    "chatgpi-pro.com"
+    "chatgpi-pro.com",
+    "deceptive.design"
   ],
-  "user_allowlist": [],
-  "feedback_history": [],
+  "user_allowlist": [
+    "prototype.click",
+    "google.com"
+  ],
+  "feedback_history": [
+    "prototype.click|false_positive",
+    "deceptive.design|confirm_scam",
+    "google.com|false_positive"
+  ],
   "weights": {
-    "urgency_penalty": 25,
+    "urgency_penalty": 24,
     "unverified_tld_penalty": 40,
     "missing_https_penalty": 20,
-    "brand_spoof_penalty": 45,
+    "brand_spoof_penalty": 46,
     "collect_trap_penalty": 50,
-    "vague_bait_penalty": 55,
+    "vague_bait_penalty": 53,
     "cross_domain_form_penalty": 75,
     "insecure_form_penalty": 45,
     "clickjack_overlay_penalty": 55,
@@ -34,17 +42,23 @@
     "Visual homoglyphs like arnazon.com or paytrn.in are High Risk brand impersonations.",
     "Vague attention-bait messages with zero verifiable context are at least Medium Risk.",
     "Pages asking to press Win+R and paste a command (ClickFix) are High Risk malware traps.",
-    "Password forms submitting to a different registered domain are High Risk credential harvesters."
+    "Password forms submitting to a different registered domain are High Risk credential harvesters.",
+    "Verified false_positive on domain htmlelement.prototype.click",
+    "Verified confirm_scam on domain www.google.com",
+    "Verified confirm_scam on domain deceptive.design",
+    "Browser extension feedback (false_positive) on www.google.com",
+    "Verified false_positive on domain www.google.com",
+    "Verified confirm_scam on domain localhost"
   ],
   "metrics": {
-    "tp": 7,
-    "tn": 7,
-    "fp": 0,
+    "tp": 18,
+    "tn": 88,
+    "fp": 5,
     "fn": 0,
-    "auto_fp_corrected": 2,
-    "auto_fn_caught": 3,
-    "browser_pages_scanned": 2,
-    "dark_patterns_found": 0
+    "auto_fp_corrected": 9,
+    "auto_fn_caught": 4,
+    "browser_pages_scanned": 15,
+    "dark_patterns_found": 8
   },
   "auto_audit_log": [
     "[INIT] TrustLens AI clean memory store initialized."
